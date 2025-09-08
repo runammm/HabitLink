@@ -1,7 +1,6 @@
 import os
 import asyncio
 import tempfile
-from typing import Optional, Union
 from src.audio import AudioInterface
 from src.stt import stt
 
