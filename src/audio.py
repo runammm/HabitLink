@@ -2,11 +2,7 @@ import asyncio
 from typing import Optional
 
 import numpy as np
-
-try:
-    import sounddevice as sd
-except ImportError as e:
-    raise ImportError("sounddevice가 필요합니다. requirements.txt에 sounddevice를 추가하고 설치하세요: pip install sounddevice") from e
+import sounddevice as sd
 
 try:
     import soundfile as sf
