@@ -1,85 +1,93 @@
-# HabitLink 개발 Action Plan (MVP)
+# HabitLink Development Action Plan (MVP)
 
-## 1. 프로젝트 개요
+## 1. Project Overview
 
-- **개발 기간:** 2024년 9월 1일 ~ 2024년 10월 31일 (총 8주)
-- **핵심 목표:** 2개월 내에 한국어 발화 습관 교정을 위한 핵심 기능(발화 속도, 키워드 카운팅, 문법 오류 분석)을 포함한 MVP(Minimum Viable Product) 웹 애플리케이션 프로토타입 개발.
-- **기술 스택 (제안):**
+- **Development Period:** September 1, 2025 - October 31, 2025 (8 weeks total)
+- **Core Objective:** To develop an MVP (Minimum Viable Product) web application prototype within 2 months, including core features for correcting Korean speech habits (speech rate, keyword counting, grammar error analysis).
+- **Proposed Tech Stack:**
     - **Backend:** Python (FastAPI or Flask)
-    - **Frontend:** Streamlit (빠른 프로토타이핑을 위해 채택)
-    - **STT (Speech-to-Text):** Google Cloud Speech-to-Text API (실시간 스트리밍 지원) 또는 NAVER CLOVA Speech Recognition
-    - **LLM:** OpenAI GPT API (문법 교정 및 분석용)
-    - **Database:** SQLite (초기 데이터 저장용)
+    - **Frontend:** Streamlit (Chosen for rapid prototyping)
+    - **STT (Speech-to-Text):** WhisperLiveKit (Local-based real-time STT and speaker recognition)
+    - **LLM:** OpenAI GPT API (For grammar correction and analysis)
+    - **Database:** SQLite (For initial data storage)
 
 ---
 
-## 2. 개발 로드맵 및 주차별 계획
+## 2. Development Roadmap & Weekly Plan
 
-### Phase 1: 핵심 백엔드 및 분석 모듈 개발 (9월, 4주)
+### Phase 1: Core Backend & Analysis Module Development (September, 4 weeks)
 
-**1-2주차 (9/1 ~ 9/15): 환경 설정 및 핵심 모듈 구현**
+**Weeks 1-2 (9/1 ~ 9/15): Environment Setup & Core Module Implementation**
 
-- **Task 1: 개발 환경 구축**
-    - Git 레포지토리 설정 및 브랜치 전략 수립
-    - Python 가상 환경 설정 및 `requirements.txt`에 라이브러리 목록 관리
-    - FastAPI 또는 Flask를 이용한 기본 백엔드 프로젝트 구조 설계
-- **Task 2: 실시간 음성 수집 및 STT 모듈 개발**
-    - 사용자의 마이크 입력을 받아 실시간으로 오디오 스트림 생성
-    - Google Cloud Speech-to-Text 등 외부 STT API와 연동하여 음성을 텍스트로 변환하는 모듈 구현
-    - 개인정보 보호를 위해 음성 데이터는 STT 변환 후 즉시 파기하는 로직 포함
-- **Task 3: 기본 분석 모듈 구현 (2가지 지표)**
-    - **발화 속도 (WPM):** 변환된 텍스트를 기반으로 분당 단어 수를 계산하는 로직 구현.
-    - **반복어·욕설 카운팅:** 사용자가 직접 설정한 키워드(필러 단어, 비속어 등)의 빈도를 카운트하는 기능 구현.
+- **Task 1: Development Environment Setup**
+    - Set up Git repository and establish a branching strategy.
+    - Configure a Python virtual environment and manage libraries in `requirements.txt`.
+    - Design the basic backend project structure using FastAPI or Flask.
+- **Task 2: Real-time Voice Capture & STT Module Development (based on WhisperLiveKit)**
+    - Install dependency libraries for `WhisperLiveKit`, such as `ffmpeg`.
+    - Write a script to run a local STT server using the `WhisperLiveKit` library.
+    - Implement a module to receive audio streams from the user's microphone, send them to the local STT server, and receive the transcribed text in real-time via WebSocket.
+    - Include logic to immediately discard voice data after STT conversion to protect privacy.
+- **Task 3: Basic Analysis Module Implementation (2 Metrics)**
+    - **Speech Rate (WPM):** Implement logic to calculate words per minute based on the transcribed text.
+    - **Filler Word/Profanity Counting:** Implement a feature to count the frequency of user-defined keywords.
 
-**3-4주차 (9/16 ~ 9/30): LLM 연동 및 피드백 프로토타입**
+**Weeks 3-4 (9/16 ~ 9/30): LLM Integration & Feedback Prototype**
 
-- **Task 4: LLM 기반 문법 오류 분석 모듈 구현**
-    - OpenAI GPT API 연동 모듈 개발
-    - STT로 변환된 텍스트를 LLM에 전송하여 문법 오류를 탐지하고 수정된 문장을 제안하는 기능 구현
-    - API 비용 및 응답 속도 최적화를 위한 프롬프트 엔지니어링
-- **Task 5: 분석 데이터 구조 설계 및 저장**
-    - 분석된 결과(WPM, 키워드 빈도, 문법 오류 등)를 저장할 데이터 모델 설계 (e.g., SQLite 테이블)
-    - 세션별 분석 데이터를 DB에 저장하는 로직 구현
-- **Task 6: 피드백 시뮬레이션 및 API 설계**
-    - 분석 결과 특정 조건(예: 기준 WPM 초과, 키워드 감지) 충족 시, 콘솔 로그나 이벤트를 통해 "진동 피드백 발생"을 시뮬레이션
-    - 프론트엔드와 연동을 위한 기본 REST API 엔드포인트 설계 (`/start`, `/stop`, `/get_analysis`)
-
----
-
-### Phase 2: MVP 프론트엔드 및 통합 (10월, 4주)
-
-**5-6주차 (10/1 ~ 10/15): UI 프로토타이핑 및 API 연동**
-
-- **Task 7: 웹 기반 UI 프로토타입 개발 (Streamlit)**
-    - **메인 화면:** 녹음 시작/종료 버튼, 실시간 변환 텍스트 출력 영역
-    - **설정 화면:** 분석을 원하는 반복어/욕설 키워드를 입력받는 UI, 목표 WPM 설정 UI
-    - **결과 화면:** 실시간 분석 결과(현재 WPM, 키워드 검출 횟수 등)를 표시하는 대시보드
-- **Task 8: 백엔드 API 서버와 프론트엔드 연동**
-    - 웹 UI에서 녹음을 시작하면 백엔드 API를 호출하여 실시간 음성 스트림 전송
-    - 백엔드로부터 STT 변환 텍스트 및 분석 결과를 받아와 UI에 실시간으로 업데이트
-
-**7-8주차 (10/16 ~ 10/31): 통합 테스트 및 MVP 완성**
-
-- **Task 9: 사후 리포트 기능 구현**
-    - 녹음 세션이 종료된 후, 해당 세션의 전체 분석 데이터를 DB에서 조회
-    - 요약 리포트(평균 WPM, 총 키워드 검출 횟수, 주요 문법 오류 등)를 웹 대시보드에 시각화 (간단한 텍스트 및 차트)
-- **Task 10: E2E (End-to-End) 통합 테스트 및 버그 수정**
-    - 사용자가 음성을 입력하고 실시간 분석 결과를 확인한 후, 요약 리포트까지 보는 전체 플로우를 테스트
-    - 발견된 버그 수정 및 안정성 개선 작업
-- **Task 11: 최종 MVP 정리 및 문서화**
-    - `README.md` 파일에 프로젝트 실행 방법, 주요 기능 및 아키텍처에 대한 설명 업데이트
-    - 코드 주석 정리 및 배포 준비
+- **Task 4: LLM-based Grammar Error Analysis Module**
+    - Develop a module to integrate with the OpenAI GPT API.
+    - Implement a feature to send transcribed text to the LLM to detect grammar errors and suggest corrections.
+    - Perform prompt engineering to optimize API costs and response speed.
+- **Task 5: Design and Store Analysis Data Structure**
+    - Design a data model (e.g., SQLite table) to store analysis results (WPM, keyword frequency, grammar errors, etc.).
+    - Implement logic to save session-based analysis data to the database.
+- **Task 6: Feedback Simulation & API Design**
+    - Simulate a "vibration feedback event" via console logs or events when analysis results meet specific conditions (e.g., exceeding target WPM, keyword detection).
+    - Design basic REST API endpoints for frontend integration (`/start`, `/stop`, `/get_analysis`).
 
 ---
 
-## 3. MVP 이후 고려사항 (Future Works)
+### Phase 2: MVP Frontend & Integration (October, 4 weeks)
 
-- **모바일/웨어러블 앱 개발:** 웹 MVP의 핵심 로직을 기반으로 네이티브 앱 개발 착수
-- **고급 분석 기능 추가:**
-    - **사투리 분석:** Spectrogram-CNN 모델 연구 및 학습 데이터 수집
-    - **맥락 적합성 평가:** 대화 전체의 흐름을 파악하고 LLM을 통해 분석하는 고도화된 로직 구현
-- **화자 분리(Speaker Diarization) 기술 도입:** 여러 사람이 대화하는 환경에서도 사용자의 음성만 정확히 인식하고 분석하는 기능
-- **고도화된 리포팅:** PDF 형식의 Clinical Report 생성 및 다운로드 기능
-- **CI/CD 파이프라인 구축:** 자동화된 테스트, 빌드, 배포 환경 구성
-- **사용자 인증 시스템:** 사용자 계정 및 데이터 관리 기능 추가
+**Weeks 5-6 (10/1 ~ 10/15): UI Prototyping & API Integration**
+
+- **Task 7: Web-based UI Prototype Development (Streamlit)**
+    - **Main Screen:** Recording start/stop button, real-time transcription display area.
+    - **Settings Screen:** UI for users to input keywords (filler words/profanity) for analysis and set a target WPM.
+    - **Results Screen:** Dashboard to display real-time analysis results (current WPM, keyword detection count, etc.).
+- **Task 8: Backend API Server and Frontend Integration**
+    - Call the backend API to send a real-time audio stream when recording starts from the web UI.
+    - Fetch and display the STT transcription and analysis results from the backend in the UI in real-time.
+- **Task 9: Dialect Analysis Model Development (Proof-of-Concept)**
+    - **Model Selection & Data Prep:** Select a pre-trained `Wav2Vec2` model from Hugging Face. Download and preprocess a subset of a Korean dialect dataset (e.g., from AI Hub), focusing on 2-3 distinct dialects plus the standard dialect.
+    - **Fine-tuning:** Develop and run a script to fine-tune the `Wav2Vec2` model for the dialect classification task. Evaluate its initial performance.
+
+**Weeks 7-8 (10/16 ~ 10/31): Integration Testing & MVP Completion**
+
+- **Task 10: Post-Session Report Feature Implementation**
+    - After a recording session ends, retrieve the complete analysis data for that session from the database.
+    - Visualize a summary report (average WPM, total keyword detections, major grammar errors, etc.) on the web dashboard using simple text and charts.
+- **Task 11: Integration of Dialect Analysis Module**
+    - Integrate the fine-tuned dialect model into the backend, creating a new API endpoint for analysis.
+    - Update the Streamlit dashboard to display the dialect analysis results (e.g., "Gyeongsang/Chungcheong Dialect: 85%").
+- **Task 12: Contextual Appropriateness Analysis Module**
+    - **Backend Logic:** Implement logic to maintain a short-term history of the last 3-5 transcribed sentences for each user session.
+    - **LLM Prompting:** Design and test a prompt that sends the conversation history and the latest utterance to an LLM to evaluate its contextual relevance.
+    - **API & UI Integration:** Create a new endpoint for this analysis and display the feedback (e.g., "Off-topic") on the dashboard.
+- **Task 13: E2E (End-to-End) Integration Testing & Bug Fixes**
+    - Test the entire user flow, including all analysis features (WPM, Keywords, Grammar, Dialect, Context).
+    - Fix any identified bugs and work on stability improvements.
+- **Task 14: Final MVP Cleanup & Documentation**
+    - Update the `README.md` file with instructions on how to run the project, its main features, and an architectural overview.
+    - Clean up code comments and prepare for deployment.
+
+---
+
+## 3. Post-MVP Considerations (Future Works)
+
+- **Mobile/Wearable App Development:** Start native app development based on the core logic of the web MVP.
+- **Advanced Reporting:** Generate and allow downloading of Clinical Reports in PDF format.
+- **CI/CD Pipeline:** Set up an automated environment for testing, building, and deployment.
+- **User Authentication System:** Add user account and data management features.
+
 

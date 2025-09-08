@@ -1,7 +1,6 @@
 from src.audio import AudioInterface
 from src.stt import stt
 import asyncio
-import uuid
 
 audio_interface = AudioInterface(samplerate=16000, channels=1)
 

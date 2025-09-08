@@ -1,7 +1,5 @@
 groq
 numpy
-librosa
-matplotlib
 python-dotenv
 sounddevice
 soundfile

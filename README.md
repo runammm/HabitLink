@@ -1,7 +1,5 @@
 # HabitLink: AI-Powered Korean Speech Habit Correction System
 
-![HabitLink Banner](https://user-images.githubusercontent.com/12345678/123456789-placeholder.png) <!-- You can replace this with a real banner later -->
-
 > A real-time analysis and feedback system designed to help Korean speakers recognize and correct their speech habits. This project provides immediate feedback and detailed post-analysis reports to improve communication skills.
 
 ---
@@ -26,6 +24,8 @@ The current development is focused on delivering a Minimum Viable Product (MVP) 
 - **🚀 Speech Rate (WPM) Analysis**: Measures Words Per Minute to provide feedback on speaking pace.
 - **🔎 Custom Keyword Detection**: Counts the frequency of user-defined keywords, such as filler words or profanity.
 - **🤖 LLM-based Grammar Check**: Leverages a Large Language Model (LLM) to detect grammatical errors and suggest corrections.
+- **🗣️ Dialect Analysis (PoC)**: Identifies the speaker's dialect (e.g., Seoul, Gyeongsang) by fine-tuning a `Wav2Vec2` model.
+- **🧠 Contextual Appropriateness Analysis**: Evaluates if the latest utterance fits the context of the recent conversation flow using an LLM.
 - **🖥️ Web Dashboard**: A web-based interface built with Streamlit for easy prototyping, allowing users to control sessions and view real-time analysis and post-session summaries.
 
 ---
@@ -36,7 +36,7 @@ The current development is focused on delivering a Minimum Viable Product (MVP) 
 |---------------|-------------------------------------------------------------------------------------|
 | **Backend**   | Python, FastAPI                                                                     |
 | **Frontend**  | Streamlit (for MVP)                                                                 |
-| **AI / ML**   | Google Cloud Speech-to-Text, OpenAI API (GPT)                                       |
+| **AI / ML**   | WhisperLiveKit (for real-time STT), OpenAI API (GPT)                                |
 | **Database**  | SQLite                                                                              |
 
 ---
@@ -45,7 +45,7 @@ The current development is focused on delivering a Minimum Viable Product (MVP) 
 
 HabitLink is designed with a modular, microservices-oriented architecture.
 
-1.  **Voice Pre-processing Module**: Captures the user's voice, isolates it from background noise, and converts speech to text using an STT/ASR engine. The original audio is immediately deleted to protect privacy.
+1.  **Voice Pre-processing Module**: Captures the user's voice and streams it to a local `WhisperLiveKit` server for real-time speech-to-text conversion. The original audio is processed in memory and not permanently stored, ensuring privacy.
 2.  **Analysis Loop Module**: The core engine that analyzes the transcribed text for the target indicators (Speech Rate, Filler Words, Grammar).
 3.  **Feedback Module**: Delivers feedback based on the analysis, primarily through the web dashboard in the MVP.
 4.  **User Interface (UI)**: A web dashboard that allows users to start/stop analysis sessions, configure settings, and view results.
@@ -56,7 +56,8 @@ HabitLink is designed with a modular, microservices-oriented architecture.
 
 ### Prerequisites
 - Python 3.8+
-- An external API key for STT (e.g., Google Cloud) and LLM (e.g., OpenAI).
+- [FFmpeg](https://ffmpeg.org/download.html)
+- An external API key for LLM (e.g., OpenAI).
 
 ### Installation & Setup
 
@@ -75,23 +76,31 @@ HabitLink is designed with a modular, microservices-oriented architecture.
 3.  **Install dependencies:**
     ```bash
     pip install -r requirements.txt
+    # This will include whisperlivekit
     ```
 
 4.  **Set up environment variables:**
-    Create a `.env` file in the root directory and add your API keys:
+    Create a `.env` file in the root directory and add your API key:
     ```
     OPENAI_API_KEY="your_openai_api_key"
-    GOOGLE_APPLICATION_CREDENTIALS="path/to/your/google_credentials.json"
     ```
 
 ### Running the Application
 
-1.  **Start the backend server:**
+This application consists of two main parts: the `WhisperLiveKit` STT server and the HabitLink analysis application.
+
+1.  **Start the WhisperLiveKit server:**
+    (You might run this in a separate terminal)
+    ```bash
+    whisperlivekit --model small --language ko
+    ```
+
+2.  **Start the backend server:**
     ```bash
     uvicorn main:app --reload 
     ```
 
-2.  **Run the frontend application:**
+3.  **Run the frontend application:**
     (Assuming the Streamlit app is in a file named `app.py`)
     ```bash
     streamlit run app.py
@@ -102,13 +111,11 @@ HabitLink is designed with a modular, microservices-oriented architecture.
 
 This project is currently under active development with a defined 2-month MVP plan. For a detailed week-by-week breakdown, please see the [ActionPlan.md](./ActionPlan.md) file.
 
-- **Phase 1 (September 2024):** Core backend development, including STT/LLM integration and the implementation of core analysis modules.
-- **Phase 2 (October 2024):** Development of the Streamlit-based web UI, API integration, and end-to-end testing.
+- **Phase 1 (September 2025):** Core backend development, including STT/LLM integration and the implementation of core analysis modules.
+- **Phase 2 (October 2025):** Development of the Streamlit web UI, integration of advanced analysis modules (Dialect, Context), and final end-to-end testing.
 
 ### Future Goals
 - [ ] Mobile & Wearable application with real-time haptic feedback.
-- [ ] Advanced analysis: Dialect detection (Spectrogram-CNN) and contextual appropriateness.
-- [ ] Speaker Diarization to distinguish speakers in a multi-person conversation.
 - [ ] Comprehensive clinical reporting features for professionals (VLPs).
 
 ---
