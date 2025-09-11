@@ -3,3 +3,8 @@ numpy
 python-dotenv
 sounddevice
 soundfile
+openai-whisper
+whisperlivekit
+pyannote.audio
+torch
+torchaudio
