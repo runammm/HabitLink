@@ -1,7 +1,9 @@
 numpy
+groq
 python-dotenv
 # Added for stt (Issue #3)
 sounddevice
+soundfile
 openai-whisper
 ipykernel
 ipywidgets

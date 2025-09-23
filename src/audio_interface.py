@@ -2,6 +2,7 @@ from .audio_engine import AudioEngine
 from .diarizer import SpeakerDiarizer
 from typing import List, Dict, Any
 
+
 class AudioInterface:
     def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, language: str = "ko"):
         self.audio_engine = audio_engine
