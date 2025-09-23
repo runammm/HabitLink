@@ -1,6 +1,12 @@
 numpy
 python-dotenv
+# Added for stt (Issue #3)
 sounddevice
 openai-whisper
 ipykernel
 ipywidgets
+# Added for diarization (Issue #4)
+torch
+torchaudio
+scipy
+whisperx @ git+https://github.com/m-bain/whisperx.git
