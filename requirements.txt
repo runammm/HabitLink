@@ -1,6 +1,8 @@
 numpy
+groq
 python-dotenv
 sounddevice
+soundfile
 openai-whisper
 ipykernel
 ipywidgets

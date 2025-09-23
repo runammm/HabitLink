@@ -4,6 +4,7 @@ from groq import Groq
 from dotenv import load_dotenv
 import os
 
+
 class STT(ABC):
     def __init__(self, model_name: str):
         pass

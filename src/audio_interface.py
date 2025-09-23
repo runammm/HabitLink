@@ -1,6 +1,7 @@
 from .audio_engine import AudioEngine
 from .stt import STT
 
+
 class AudioInterface:
     def __init__(self, audio_engine: AudioEngine, stt: STT, language: str = "ko"):
         self.audio_engine = audio_engine
