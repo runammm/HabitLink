@@ -1,9 +1,20 @@
 import os
+import logging
 from src.audio_engine import AudioEngine
 from src.diarizer import SpeakerDiarizer
 from src.audio_interface import AudioInterface
 from dotenv import load_dotenv
 import traceback
+
+# --- Suppress library warnings ---
+# Suppress warnings from specific libraries to clean up the output.
+logging.getLogger('pyannote').setLevel(logging.WARNING)
+logging.getLogger('torchaudio').setLevel(logging.ERROR)
+logging.getLogger('speechbrain').setLevel(logging.ERROR)
+# PyTorch Lightning logs a welcome message by default, which we can disable.
+os.environ["PYTORCH_SUPPRESS_DEPRECATION_WARNINGS"] = "1"
+os.environ["PL_SUPPRESS_FORK"] = "1"
+# ---------------------------------
 
 # Load environment variables from .env file
 load_dotenv()

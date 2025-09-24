@@ -2,15 +2,17 @@ import os
 import whisperx
 import torch
 from dotenv import load_dotenv
-from pyannote.audio import Model, Inference
+from pyannote.audio import Pipeline, Model, Inference
 from scipy.spatial.distance import cdist
 import numpy as np
+import pandas as pd
 
 load_dotenv()
 
 class SpeakerDiarizer:
     """
-    A class to perform transcription and identify a pre-enrolled user's speech segments.
+    A class to perform transcription and multi-speaker diarization,
+    identifying a pre-enrolled user among the speakers.
     """
     def __init__(self, device: str = "cpu", batch_size: int = 16, compute_type: str = "float32"):
         """
@@ -19,11 +21,15 @@ class SpeakerDiarizer:
         self.device = device
         self.batch_size = batch_size
         self.compute_type = compute_type
-        self.asr_model = whisperx.load_model("base", self.device, compute_type=self.compute_type, language="ko")
+        self.asr_model = whisperx.load_model("small", self.device, compute_type=self.compute_type, language="ko")
         
         hf_token = os.getenv("HUGGING_FACE_TOKEN")
         if not hf_token:
             raise ValueError("Hugging Face token not found. Please set HUGGING_FACE_TOKEN in your .env file.")
+        
+        # Re-introduce the full diarization pipeline
+        self.diarize_model = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
+        self.diarize_model.to(torch.device(self.device))
         
         self.embedding_model = Model.from_pretrained("pyannote/embedding", use_auth_token=hf_token)
         self.embedding_inference = Inference(self.embedding_model, window="whole")
@@ -45,71 +51,74 @@ class SpeakerDiarizer:
 
     def process(self, audio_path: str) -> list[dict]:
         """
-        Transcribes an audio file and assigns 'USER' or 'OTHER' labels to speech segments
-        based on a pre-enrolled voice embedding.
+        Transcribes an audio file, diarizes it into multiple speakers,
+        and identifies the user among them.
         """
         # 1. Load Audio
-        # whisperx.load_audio automatically resamples the audio to 16000 Hz for the model.
         audio = whisperx.load_audio(audio_path)
         sample_rate = 16000 # Whisper models operate at a 16kHz sample rate.
 
-        # 2. Transcribe to get speech segments
+        # 2. Transcribe
         result = self.asr_model.transcribe(audio, batch_size=self.batch_size)
-        segments = result.get("segments", [])
-
-        if not segments:
+        if not result.get("segments"):
             return []
 
-        # If no user is enrolled, return segments with an 'UNKNOWN' speaker.
-        if self.user_embedding is None:
-            print("⚠️ User voice not enrolled. Returning anonymous speaker labels.")
-            for seg in segments:
-                seg['speaker'] = 'UNKNOWN'
-            return segments
+        # 3. Perform anonymous multi-speaker diarization
+        diarization_result = self.diarize_model(audio_path)
 
-        # 3. For each segment, determine if it's the user's voice
-        user_embed_np = self.user_embedding.reshape(1, -1)
-        
-        for segment in segments:
-            # Extract audio waveform for the current segment
-            start_time = segment['start']
-            end_time = segment['end']
-            
-            # Slice the pre-loaded audio array to get the segment's waveform
-            start_sample = int(start_time * sample_rate)
-            end_sample = int(end_time * sample_rate)
-            segment_waveform = audio[start_sample:end_sample]
+        # 4. Identify the user among the anonymous speakers by comparing voice embeddings
+        identified_user_label = None
+        if self.user_embedding is not None:
+            speaker_embeddings = {}
+            MIN_SEGMENT_DURATION_S = 1.5
 
-            # Skip very short segments
-            if segment_waveform.shape[0] < 1600: # Corresponds to ~0.1s, a safe low-bound
-                segment['speaker'] = 'OTHER'
-                continue
-
-            # Prepare waveform for the embedding model
-            input_waveform = {
-                "waveform": torch.from_numpy(segment_waveform).unsqueeze(0),
-                "sample_rate": sample_rate
-            }
-            
-            # Create embedding for the segment
-            try:
-                embedding = self.embedding_inference(input_waveform)
-                segment_embedding = np.squeeze(embedding).reshape(1, -1)
+            for speaker_label in diarization_result.labels():
+                timeline = diarization_result.label_timeline(speaker_label)
+                long_enough_segment = next((s for s in timeline if s.duration > MIN_SEGMENT_DURATION_S), None)
                 
-                # Compare with user's voice
-                distance = cdist(user_embed_np, segment_embedding, metric='cosine')[0, 0]
-                
-                # Assign label based on a distance threshold
-                if distance < 0.4:  # This threshold might need tuning
-                    segment['speaker'] = 'USER'
-                else:
-                    segment['speaker'] = 'OTHER'
+                if long_enough_segment is None:
+                    print(f"⚠️ No segment long enough for speaker {speaker_label} to create a reliable embedding. Skipping.")
+                    continue
 
-            except Exception as e:
-                print(f"Could not process segment from {start_time:.2f}s to {end_time:.2f}s: {e}")
-                segment['speaker'] = 'OTHER'
+                try:
+                    embedding = self.embedding_inference.crop(audio_path, long_enough_segment)
+                    speaker_embeddings[speaker_label] = np.squeeze(embedding)
+                except Exception as e:
+                    print(f"Could not create embedding for a segment of speaker {speaker_label}: {e}")
+                    continue
+            
+            if speaker_embeddings:
+                labels = list(speaker_embeddings.keys())
+                embeds = np.array(list(speaker_embeddings.values()))
+                distances = cdist(self.user_embedding.reshape(1, -1), embeds, metric='cosine')
+                best_match_idx = np.argmin(distances)
+
+                if distances[0, best_match_idx] < 0.4: # Similarity threshold
+                    identified_user_label = labels[best_match_idx]
+                    print(f"✅ User identified as anonymous label: {identified_user_label}")
+
+        # 5. Create the final speaker mapping
+        diarize_df = pd.DataFrame(diarization_result.itertracks(yield_label=True), columns=['segment', 'track', 'speaker'])
         
-        return segments
+        other_speaker_count = 1
+        final_speaker_mapping = {}
+        for original_label in sorted(diarize_df['speaker'].unique()):
+            if original_label == identified_user_label:
+                final_speaker_mapping[original_label] = 'USER'
+            else:
+                final_speaker_mapping[original_label] = f'SPEAKER_{other_speaker_count:02d}'
+                other_speaker_count += 1
+        
+        diarize_df['speaker'] = diarize_df['speaker'].map(final_speaker_mapping)
+        diarize_df['start'] = diarize_df['segment'].apply(lambda x: x.start)
+        diarize_df['end'] = diarize_df['segment'].apply(lambda x: x.end)
+
+        # 6. Align transcription with the final diarization result
+        model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=self.device)
+        aligned_result = whisperx.align(result["segments"], model_a, metadata, audio, self.device, return_char_alignments=False)
+        final_result = whisperx.assign_word_speakers(diarize_df, aligned_result)
+
+        return final_result.get("segments", [])
 
 
 if __name__ == '__main__':

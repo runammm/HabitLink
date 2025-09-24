@@ -12,9 +12,11 @@ class AudioInterface:
         """
         Guides the user through the voice enrollment process.
         """
-        enroll_text = "안녕하세요, HabitLink입니다. 지금부터 음성 등록을 시작하겠습니다. 다음 문장을 천천히 읽어주세요."
+        enroll_text = "안녕하세요, HabitLink입니다. 지금부터 음성 등록을 시작하겠습니다. 아래의 문장을 평소처럼 편하게 읽어주세요."
+        reading_text = "죽는 날까지 하늘을 우러러 한 점 부끄럼이 없기를, 잎새에 이는 바람에도 나는 괴로워했다. 오늘 밤에도 별이 바람에 스치운다."
         print("\n--- 🗣️ User Voice Enrollment ---")
         print(f"\"{enroll_text}\"")
+        print(f"\"{reading_text}\"")
         input("준비가 되셨으면 Enter 키를 누르고, 위 문장을 읽기 시작하세요...")
         
         # Record the user's voice for enrollment
