@@ -56,7 +56,7 @@ class SpeakerDiarizer:
         """
         # 1. Load Audio
         audio = whisperx.load_audio(audio_path)
-        sample_rate = 16000 # Whisper models operate at a 16kHz sample rate.
+        sample_rate = 16000  # Whisper models operate at a 16kHz sample rate.
 
         # 2. Transcribe
         result = self.asr_model.transcribe(audio, batch_size=self.batch_size)
@@ -115,9 +115,11 @@ class SpeakerDiarizer:
 
         # 6. Align transcription with the final diarization result
         model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=self.device)
+        # Set return_char_alignments=False for word-level timestamps
         aligned_result = whisperx.align(result["segments"], model_a, metadata, audio, self.device, return_char_alignments=False)
         final_result = whisperx.assign_word_speakers(diarize_df, aligned_result)
 
+        # Return the segments which now include word-level timestamps
         return final_result.get("segments", [])
 
 

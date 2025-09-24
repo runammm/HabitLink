@@ -2,9 +2,11 @@ import os
 import logging
 from src.audio_engine import AudioEngine
 from src.diarizer import SpeakerDiarizer
+from src.word_analyzer import WordAnalyzer
 from src.audio_interface import AudioInterface
 from dotenv import load_dotenv
 import traceback
+from collections import defaultdict
 
 # --- Suppress library warnings ---
 # Suppress warnings from specific libraries to clean up the output.
@@ -30,32 +32,57 @@ else:
     try:
         # 1. Initialize the core components
         audio_engine = AudioEngine()
-        diarizer = SpeakerDiarizer()  # Uses HF_TOKEN from .env
+        diarizer = SpeakerDiarizer()
+        word_analyzer = WordAnalyzer()
 
         # 2. Initialize the interface with the new components
-        audio_interface = AudioInterface(audio_engine, diarizer)
+        audio_interface = AudioInterface(audio_engine, diarizer, word_analyzer)
 
         # 3. Guide user through voice enrollment
         audio_interface.enroll_user(duration=15.0)
 
-        # 4. Record a conversation for processing
+        # 4. Get keywords from user
+        print("\n--- 🔍 Keyword Detection Setup ---")
+        keyword_input = input("분석할 키워드를 쉼표(,)로 구분하여 입력하세요 (예: 그냥, 근데, 약간): ")
+        keywords_to_find = [keyword.strip() for keyword in keyword_input.split(',')]
+
+        # 5. Record a conversation for processing
         input("\n--- 🎙️ Conversation Recording ---\n사용자 등록이 완료되었습니다. 이제 대화 녹음을 시작합니다.\n준비가 되셨으면 Enter 키를 눌러주세요...")
         record_duration = 20.0
         print(f"Recording conversation for {record_duration} seconds...")
         
-        # 5. Run the recording and diarization process
-        diarized_result = audio_interface.record_and_process(record_duration)
+        # 6. Run the recording, diarization, and analysis process
+        analysis_result = audio_interface.record_and_process(record_duration, keywords_to_find)
 
-        # 6. Print the results
+        # 7. Print the results
+        diarized_transcript = analysis_result["full_transcript"]
+        found_keywords = analysis_result["detected_keywords"]
+
         print("\n--- ✅ Diarization Test Result ---")
-        if diarized_result:
-            for segment in diarized_result:
+        if diarized_transcript:
+            for segment in diarized_transcript:
                 speaker = segment.get('speaker', 'UNKNOWN_SPEAKER')
                 start = segment.get('start', 0)
                 end = segment.get('end', 0)
                 text = segment.get('text', '')
                 
                 print(f"[{start:.2f}s - {end:.2f}s] {speaker}: {text}")
+        
+        print("\n--- 📝 Keyword Analysis ---")
+        if not found_keywords:
+            print("지정한 키워드가 대화에서 발견되지 않았습니다.")
+        else:
+            # Group keywords by the detected word for a clean summary
+            keyword_summary = defaultdict(list)
+            for item in found_keywords:
+                keyword_summary[item['keyword'].lower()].append(item)
+            
+            for keyword, items in keyword_summary.items():
+                print(f"'{keyword}': {len(items)}회 검출")
+                for item in items:
+                    timestamp = item['timestamp']
+                    speaker = item['speaker']
+                    print(f"  - {timestamp:.2f}s ({speaker})")
         
         print("\n----------------------------")
 

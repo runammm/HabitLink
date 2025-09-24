@@ -1,12 +1,14 @@
 from .audio_engine import AudioEngine
 from .diarizer import SpeakerDiarizer
+from .word_analyzer import WordAnalyzer
 from typing import List, Dict, Any
 
 
 class AudioInterface:
-    def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer):
+    def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, word_analyzer: WordAnalyzer):
         self.audio_engine = audio_engine
         self.diarizer = diarizer
+        self.word_analyzer = word_analyzer
 
     def enroll_user(self, duration: float = 15.0):
         """
@@ -29,15 +31,27 @@ class AudioInterface:
     def record(self, duration: float, output_path: str = "temp.wav"):
         return self.audio_engine.record(duration, output_path)
     
-    def record_and_process(self, duration: float) -> list[dict]:
+    def record_and_process(self, duration: float, keywords: List[str]) -> Dict[str, Any]:
         """
-        Records audio for a given duration and returns the diarized transcript.
+        Records audio, diarizes it, and analyzes for keywords.
         """
+        # Step 1: Record and Diarize
         input_path = self.record(duration)
         diarized_transcript = self.diarizer.process(input_path)
         
         # If the result is empty, it means no speech was detected.
         if not diarized_transcript:
             print("\n⚠️ 입력된 음성이 없었습니다. (No speech detected.)")
+            return {
+                "full_transcript": [],
+                "detected_keywords": []
+            }
 
-        return diarized_transcript
+        # Step 2: Analyze for keywords
+        found_keywords = self.word_analyzer.analyze(diarized_transcript, keywords)
+
+        # Step 3: Return all results for the frontend/feedback module
+        return {
+            "full_transcript": diarized_transcript,
+            "detected_keywords": found_keywords
+        }
