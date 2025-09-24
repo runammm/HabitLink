@@ -2,23 +2,18 @@ import numpy as np
 import sounddevice as sd
 import asyncio
 import concurrent.futures
-
-try:
-    import soundfile as sf
-    _HAS_SOUNDFILE = True
-except ImportError:
-    _HAS_SOUNDFILE = False
+import soundfile as sf
 
 
 class AudioEngine:
     def __init__(self, samplerate: int = 16000, channels: int = 1, dtype: str = "float32"):
         """
-        사운드 디바이스 라이브러리를 활용한 오디오 녹음 엔진
+        Audio recording engine utilizing the sounddevice library
         
         Args:
-            samplerate (int): 샘플링 레이트 (기본값: 16000Hz)
-            channels (int): 채널 수 (기본값: 1, 모노)
-            dtype (str): 데이터 타입 (기본값: "float32")
+            samplerate (int): Sampling rate (Default: 16000Hz)
+            channels (int): Number of channels (Default: 1, Mono)
+            dtype (str): Data type (Default: "float32")
         """
         self.samplerate = int(samplerate)
         self.channels = int(channels)
@@ -26,31 +21,27 @@ class AudioEngine:
 
     def record(self, duration: float, output_path: str = "temp.wav") -> str:
         """
-        주어진 시간(duration)만큼 마이크에서 녹음하여 파일로 저장합니다.
+        Record from the microphone for a given duration and save it as a file.
         
         Args:
-            duration (float): 녹음 시간 (초)
-            output_path (str): 저장할 파일 경로 (기본값: "temp.wav")
+            duration (float): Recording time (seconds)
+            output_path (str): Path to save file (Default: "temp.wav")
             
         Returns:
-            str: 저장된 파일 경로
+            str: Saved file path
             
-        Raises:
-            ValueError: duration이 0 이하일 때
-            RuntimeError: soundfile이 설치되지 않았을 때
+        Raise:
+            ValueError: When duration is less than or equal to 0
         """
         if duration <= 0:
-            raise ValueError("duration은 0보다 커야 합니다.")
-            
-        if not _HAS_SOUNDFILE:
-            raise RuntimeError("파일로 저장하려면 soundfile이 필요합니다. 'pip install soundfile'로 설치하세요.")
+            raise ValueError("Duration must be greater than 0.")
         
-        # 총 프레임 수 계산
+        # Calculate total frame count
         frames = int(round(self.samplerate * duration))
         
-        print(f"녹음 시작... ({duration}초)")
+        print(f"Start recording... ({duration} seconds)")
         
-        # 녹음 실행
+        # Run recording
         recording = sd.rec(
             frames=frames,
             samplerate=self.samplerate,
@@ -58,57 +49,53 @@ class AudioEngine:
             dtype=self.dtype
         )
         
-        # 녹음 완료까지 대기
+        # Wait until recording is complete
         sd.wait()
         
-        print("녹음 완료!")
+        print("Recording complete!")
         
-        # 파일로 저장
+        # Save to file
         sf.write(output_path, recording, self.samplerate)
         
-        print(f"파일 저장됨: {output_path}")
+        print(f"File saved: {output_path}")
         
         return output_path
 
     async def record_async(self, duration: float, output_path: str = "temp.wav") -> str:
         """
-        비동기로 주어진 시간(duration)만큼 마이크에서 녹음하여 파일로 저장합니다.
+        Asynchronously records from the microphone for a given duration and saves it as a file.
         
         Args:
-            duration (float): 녹음 시간 (초)
-            output_path (str): 저장할 파일 경로 (기본값: "temp.wav")
+            duration (float): Recording time (seconds)
+            output_path (str): Path to save file (Default: "temp.wav")
             
         Returns:
-            str: 저장된 파일 경로
+            str: Saved file path
             
-        Raises:
-            ValueError: duration이 0 이하일 때
-            RuntimeError: soundfile이 설치되지 않았을 때
+        Raise:
+            ValueError: When duration is less than or equal to 0
         """
         if duration <= 0:
-            raise ValueError("duration은 0보다 커야 합니다.")
-            
-        if not _HAS_SOUNDFILE:
-            raise RuntimeError("파일로 저장하려면 soundfile이 필요합니다. 'pip install soundfile'로 설치하세요.")
+            raise ValueError("Duration must be greater than 0.")
         
-        # 총 프레임 수 계산
+        # Calculate total frame count
         frames = int(round(self.samplerate * duration))
         
-        print(f"비동기 녹음 시작... ({duration}초)")
+        print(f"Starting asynchronous recording... ({duration} seconds)")
         
-        # 스레드 풀에서 녹음 실행
+        # Running recordings on a thread pool
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # 녹음 작업을 별도 스레드에서 실행
+            # Run the recording task in a separate thread
             recording = await loop.run_in_executor(
                 executor, 
                 self._record_blocking, 
                 frames
             )
         
-        print("비동기 녹음 완료!")
+        print("Asynchronous recording complete!")
         
-        # 파일로 저장
+        # Save to file
         await loop.run_in_executor(
             executor,
             sf.write,
@@ -117,19 +104,19 @@ class AudioEngine:
             self.samplerate
         )
         
-        print(f"파일 저장됨: {output_path}")
+        print(f"File saved: {output_path}")
         
         return output_path
 
     def _record_blocking(self, frames: int) -> np.ndarray:
         """
-        동기적으로 녹음을 수행하는 내부 메서드
+        Internal method that performs recording synchronously
         
         Args:
-            frames (int): 녹음할 프레임 수
+            frames (int): Number of frames to record
             
         Returns:
-            np.ndarray: 녹음된 오디오 데이터
+            np.ndarray: Recorded audio data
         """
         recording = sd.rec(
             frames=frames,
@@ -138,17 +125,17 @@ class AudioEngine:
             dtype=self.dtype
         )
         
-        # 녹음 완료까지 대기
+        # Wait until recording is complete
         sd.wait()
         
         return recording
-        
+
     def get_device_info(self):
         """
-        사용 가능한 오디오 디바이스 정보를 반환합니다.
+        Returns information about available audio devices.
         
         Returns:
-            dict: 디바이스 정보
+            dict: Device information
         """
         return {
             "devices": sd.query_devices(),
@@ -157,20 +144,21 @@ class AudioEngine:
         }
 
 
-# 비동기 사용 예제
+# Test code
+# Async usage example
 async def main():
     audio_engine = AudioEngine()
     
-    # 비동기 녹음
+    # Async recording
     result = await audio_engine.record_async(5.0, "async_recording.wav")
-    print(f"비동기 녹음 결과: {result}")
+    print(f"Asynchronous recording result: {result}")
 
 
 if __name__ == "__main__":
-    # 동기 녹음 테스트
+    # Synchronous recording test
     audio_engine = AudioEngine()
     audio_engine.record(5.0)
     
-    # 비동기 녹음 테스트
+    # Asynchronous recording test
     # asyncio.run(main())
     

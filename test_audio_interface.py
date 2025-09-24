@@ -3,7 +3,7 @@ from src.audio_engine import AudioEngine
 from src.diarizer import SpeakerDiarizer
 from src.audio_interface import AudioInterface
 from dotenv import load_dotenv
-import traceback # Add traceback for detailed error logging
+import traceback
 
 # Load environment variables from .env file
 load_dotenv()

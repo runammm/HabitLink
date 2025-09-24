@@ -2,10 +2,11 @@ import os
 import whisperx
 import torch
 from dotenv import load_dotenv
-from pyannote.audio import Pipeline # Updated import for new API
-import pandas as pd # Import pandas for data manipulation
+from pyannote.audio import Pipeline
+import pandas as pd
 
 load_dotenv()
+
 
 class SpeakerDiarizer:
     """
@@ -30,10 +31,9 @@ class SpeakerDiarizer:
         if not hf_token:
             raise ValueError("Hugging Face token not found. Please set HUGGING_FACE_TOKEN in your .env file.")
         
-        # Updated diarization model loading for pyannote.audio 3.x
+        # Diarization model loading for pyannote.audio 3.x
         self.diarize_model = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
         self.diarize_model.to(torch.device(self.device))
-
 
     def process(self, audio_path: str, min_speakers: int = None, max_speakers: int = None) -> list[dict]:
         """
@@ -59,7 +59,6 @@ class SpeakerDiarizer:
         result = whisperx.align(result["segments"], model_a, metadata, audio, self.device, return_char_alignments=False)
 
         # 4. Diarize
-        # Updated to use the new pyannote.audio pipeline API
         diarization_result = self.diarize_model(audio_path, min_speakers=min_speakers, max_speakers=max_speakers)
 
         # Convert pyannote annotation to a pandas DataFrame whisperx can use
@@ -83,6 +82,7 @@ class SpeakerDiarizer:
         
         return formatted_segments
 
+
 if __name__ == '__main__':
     # This is a test script to verify the functionality.
     # To run this, you need a multi-speaker audio file.
@@ -98,7 +98,7 @@ if __name__ == '__main__':
     import numpy as np
 
     SAMPLE_RATE = 16000
-    DURATION = 5 # seconds
+    DURATION = 5  # seconds
     TEST_AUDIO_PATH = "temp_diarizer_test.wav"
 
     if not os.path.exists(TEST_AUDIO_PATH):
