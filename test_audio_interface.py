@@ -24,16 +24,19 @@ else:
         # 2. Initialize the interface with the new components
         audio_interface = AudioInterface(audio_engine, diarizer)
 
-        # 3. Define recording duration
-        record_duration = 10.0  # seconds
+        # 3. Guide user through voice enrollment
+        audio_interface.enroll_user(duration=15.0)
 
-        print(f"Recording audio for {record_duration} seconds...")
+        # 4. Record a conversation for processing
+        input("\n--- 🎙️ Conversation Recording ---\n사용자 등록이 완료되었습니다. 이제 대화 녹음을 시작합니다.\n준비가 되셨으면 Enter 키를 눌러주세요...")
+        record_duration = 20.0
+        print(f"Recording conversation for {record_duration} seconds...")
         
-        # 4. Run the recording and diarization process
+        # 5. Run the recording and diarization process
         diarized_result = audio_interface.record_and_process(record_duration)
 
-        # 5. Print the results
-        print("\n--- Diarization Test Result ---")
+        # 6. Print the results
+        print("\n--- ✅ Diarization Test Result ---")
         if diarized_result:
             for segment in diarized_result:
                 speaker = segment.get('speaker', 'UNKNOWN_SPEAKER')
@@ -42,8 +45,6 @@ else:
                 text = segment.get('text', '')
                 
                 print(f"[{start:.2f}s - {end:.2f}s] {speaker}: {text}")
-        else:
-            print("No speech detected or an error occurred during processing.")
         
         print("\n----------------------------")
 
