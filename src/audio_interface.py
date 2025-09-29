@@ -3,18 +3,20 @@ from .diarizer import SpeakerDiarizer
 from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
 from .grammar_analyzer import GrammarAnalyzer
+from .context_analyzer import ContextAnalyzer
 from .utils import load_profanity_list
 from typing import List, Dict, Any
 
 class AudioInterface:
     def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, 
                  word_analyzer: WordAnalyzer, speech_rate_analyzer: SpeechRateAnalyzer,
-                 grammar_analyzer: GrammarAnalyzer):
+                 grammar_analyzer: GrammarAnalyzer, context_analyzer: ContextAnalyzer):
         self.audio_engine = audio_engine
         self.diarizer = diarizer
         self.word_analyzer = word_analyzer
         self.speech_rate_analyzer = speech_rate_analyzer
         self.grammar_analyzer = grammar_analyzer
+        self.context_analyzer = context_analyzer
         # Load the profanity list once during initialization
         self.profanity_list = load_profanity_list()
 
@@ -55,7 +57,8 @@ class AudioInterface:
                 "detected_custom_keywords": [],
                 "detected_profanity": [],
                 "speech_rate_analysis": [],
-                "grammar_analysis": []
+                "grammar_analysis": [],
+                "context_analysis_report": []
             }
 
         # Step 2: Run parallel analyses
@@ -63,6 +66,7 @@ class AudioInterface:
         detected_profanity = self.word_analyzer.analyze(diarized_transcript, self.profanity_list)
         speech_rate = self.speech_rate_analyzer.analyze(diarized_transcript)
         grammar_errors = self.grammar_analyzer.analyze(diarized_transcript)
+        context_analysis_report = self.context_analyzer.analyze_full_transcript(diarized_transcript)
 
         # Step 3: Consolidate all results
         return {
@@ -70,5 +74,6 @@ class AudioInterface:
             "detected_custom_keywords": detected_custom_words,
             "detected_profanity": detected_profanity,
             "speech_rate_analysis": speech_rate,
-            "grammar_analysis": grammar_errors
+            "grammar_analysis": grammar_errors,
+            "context_analysis_report": context_analysis_report
         }

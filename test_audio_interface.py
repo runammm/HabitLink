@@ -5,6 +5,7 @@ from src.diarizer import SpeakerDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
 from src.grammar_analyzer import GrammarAnalyzer
+from src.context_analyzer import ContextAnalyzer
 from src.audio_interface import AudioInterface
 from dotenv import load_dotenv
 import traceback
@@ -42,9 +43,17 @@ else:
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()
         grammar_analyzer = GrammarAnalyzer()
+        context_analyzer = ContextAnalyzer()
 
         # 2. Initialize the interface with the new components
-        audio_interface = AudioInterface(audio_engine, diarizer, word_analyzer, speech_rate_analyzer, grammar_analyzer)
+        audio_interface = AudioInterface(
+            audio_engine, 
+            diarizer, 
+            word_analyzer, 
+            speech_rate_analyzer, 
+            grammar_analyzer,
+            context_analyzer
+        )
 
         # 3. Guide user through voice enrollment
         audio_interface.enroll_user(duration=15.0)
@@ -68,6 +77,7 @@ else:
         detected_profanity = analysis_result["detected_profanity"]
         speech_rate_analysis = analysis_result["speech_rate_analysis"]
         grammar_analysis = analysis_result["grammar_analysis"]
+        context_analysis_report = analysis_result["context_analysis_report"]
 
         print("\n--- ✅ Diarization Test Result ---")
         if diarized_transcript:
@@ -153,6 +163,20 @@ else:
                 print(f"    - 설명: {explanation}")
                 print(f"    - 전체 문맥: \"{context}\"")
                 
+        print("\n--- 🧠 Contextual Coherence Report ---")
+        if not context_analysis_report:
+            print("전체 대화에서 맥락적 오류가 발견되지 않았습니다.")
+        else:
+            print(f"총 {len(context_analysis_report)}개의 맥락적 오류가 발견되었습니다:")
+            for error in context_analysis_report:
+                speaker = error.get('speaker', 'UNKNOWN')
+                timestamp = error.get('timestamp', 0)
+                utterance = error.get('utterance', '')
+                reasoning = error.get('reasoning', 'No reason provided.')
+                
+                print(f"\n  - [{timestamp:.2f}s, {speaker}] \"{utterance}\"")
+                print(f"    - 분석: {reasoning}")
+            
         print("\n----------------------------")
 
     except Exception as e:

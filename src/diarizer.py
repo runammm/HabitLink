@@ -100,14 +100,12 @@ class SpeakerDiarizer:
         # 5. Create the final speaker mapping
         diarize_df = pd.DataFrame(diarization_result.itertracks(yield_label=True), columns=['segment', 'track', 'speaker'])
         
-        other_speaker_count = 1
         final_speaker_mapping = {}
         for original_label in sorted(diarize_df['speaker'].unique()):
             if original_label == identified_user_label:
-                final_speaker_mapping[original_label] = 'USER'
+                final_speaker_mapping[original_label] = 'User'
             else:
-                final_speaker_mapping[original_label] = f'SPEAKER_{other_speaker_count:02d}'
-                other_speaker_count += 1
+                final_speaker_mapping[original_label] = 'Others'
         
         diarize_df['speaker'] = diarize_df['speaker'].map(final_speaker_mapping)
         diarize_df['start'] = diarize_df['segment'].apply(lambda x: x.start)
