@@ -4,6 +4,7 @@ from src.audio_engine import AudioEngine
 from src.diarizer import SpeakerDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
+from src.grammar_analyzer import GrammarAnalyzer
 from src.audio_interface import AudioInterface
 from dotenv import load_dotenv
 import traceback
@@ -29,6 +30,10 @@ if not os.getenv("HUGGING_FACE_TOKEN"):
     print("Error: HUGGING_FACE_TOKEN environment variable not set.")
     print("Please create a .env file in the root directory and add your token:")
     print('HUGGING_FACE_TOKEN="your_hf_token_here"')
+elif not os.getenv("GROQ_API_KEY"):
+    print("Error: GROQ_API_KEY environment variable not set.")
+    print("Please create a .env file in the root directory and add your key:")
+    print('GROQ_API_KEY="your_groq_api_key_here"')
 else:
     try:
         # 1. Initialize the core components
@@ -36,9 +41,10 @@ else:
         diarizer = SpeakerDiarizer()
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()
+        grammar_analyzer = GrammarAnalyzer()
 
         # 2. Initialize the interface with the new components
-        audio_interface = AudioInterface(audio_engine, diarizer, word_analyzer, speech_rate_analyzer)
+        audio_interface = AudioInterface(audio_engine, diarizer, word_analyzer, speech_rate_analyzer, grammar_analyzer)
 
         # 3. Guide user through voice enrollment
         audio_interface.enroll_user(duration=15.0)
@@ -61,6 +67,7 @@ else:
         found_keywords = analysis_result["detected_custom_keywords"]
         detected_profanity = analysis_result["detected_profanity"]
         speech_rate_analysis = analysis_result["speech_rate_analysis"]
+        grammar_analysis = analysis_result["grammar_analysis"]
 
         print("\n--- ✅ Diarization Test Result ---")
         if diarized_transcript:
@@ -126,6 +133,26 @@ else:
                 overall_wpm = overall_wps * 60
                 print(f"\n  Overall Average: {overall_wpm:.2f} WPM ({overall_wps:.2f} WPS)")
 
+        print("\n--- 🧐 Grammar Analysis ---")
+        if not grammar_analysis:
+            print("문법 또는 맞춤법 오류가 발견되지 않았습니다.")
+        else:
+            for error in grammar_analysis:
+                speaker = error.get('speaker', 'UNKNOWN')
+                timestamp = error.get('timestamp', 0)
+                context = error.get('context', '')
+                details = error.get('error_details', {})
+                
+                original = details.get('original', '')
+                corrected = details.get('corrected', '')
+                explanation = details.get('explanation', '')
+                error_type = details.get('error_type', 'Unknown')
+                
+                print(f"\n  - [{timestamp:.2f}s, {speaker}] '{original}' → '{corrected}'")
+                print(f"    - 종류: {error_type}")
+                print(f"    - 설명: {explanation}")
+                print(f"    - 전체 문맥: \"{context}\"")
+                
         print("\n----------------------------")
 
     except Exception as e:

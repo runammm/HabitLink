@@ -2,16 +2,19 @@ from .audio_engine import AudioEngine
 from .diarizer import SpeakerDiarizer
 from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
-from .utils import load_profanity_list  # Import from utils
+from .grammar_analyzer import GrammarAnalyzer
+from .utils import load_profanity_list
 from typing import List, Dict, Any
 
 class AudioInterface:
     def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, 
-                 word_analyzer: WordAnalyzer, speech_rate_analyzer: SpeechRateAnalyzer):
+                 word_analyzer: WordAnalyzer, speech_rate_analyzer: SpeechRateAnalyzer,
+                 grammar_analyzer: GrammarAnalyzer):
         self.audio_engine = audio_engine
         self.diarizer = diarizer
         self.word_analyzer = word_analyzer
         self.speech_rate_analyzer = speech_rate_analyzer
+        self.grammar_analyzer = grammar_analyzer
         # Load the profanity list once during initialization
         self.profanity_list = load_profanity_list()
 
@@ -51,18 +54,21 @@ class AudioInterface:
                 "full_transcript": [],
                 "detected_custom_keywords": [],
                 "detected_profanity": [],
-                "speech_rate_analysis": []
+                "speech_rate_analysis": [],
+                "grammar_analysis": []
             }
 
         # Step 2: Run parallel analyses
         detected_custom_words = self.word_analyzer.analyze(diarized_transcript, custom_keywords)
         detected_profanity = self.word_analyzer.analyze(diarized_transcript, self.profanity_list)
         speech_rate = self.speech_rate_analyzer.analyze(diarized_transcript)
+        grammar_errors = self.grammar_analyzer.analyze(diarized_transcript)
 
         # Step 3: Consolidate all results
         return {
             "full_transcript": diarized_transcript,
             "detected_custom_keywords": detected_custom_words,
             "detected_profanity": detected_profanity,
-            "speech_rate_analysis": speech_rate
+            "speech_rate_analysis": speech_rate,
+            "grammar_analysis": grammar_errors
         }
