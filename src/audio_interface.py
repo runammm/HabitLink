@@ -1,14 +1,19 @@
 from .audio_engine import AudioEngine
 from .diarizer import SpeakerDiarizer
 from .word_analyzer import WordAnalyzer
+from .speech_rate_analyzer import SpeechRateAnalyzer
+from .utils import load_profanity_list  # Import from utils
 from typing import List, Dict, Any
 
-
 class AudioInterface:
-    def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, word_analyzer: WordAnalyzer):
+    def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, 
+                 word_analyzer: WordAnalyzer, speech_rate_analyzer: SpeechRateAnalyzer):
         self.audio_engine = audio_engine
         self.diarizer = diarizer
         self.word_analyzer = word_analyzer
+        self.speech_rate_analyzer = speech_rate_analyzer
+        # Load the profanity list once during initialization
+        self.profanity_list = load_profanity_list()
 
     def enroll_user(self, duration: float = 15.0):
         """
@@ -31,9 +36,9 @@ class AudioInterface:
     def record(self, duration: float, output_path: str = "temp.wav"):
         return self.audio_engine.record(duration, output_path)
     
-    def record_and_process(self, duration: float, keywords: List[str]) -> Dict[str, Any]:
+    def record_and_process(self, duration: float, custom_keywords: List[str]) -> Dict[str, Any]:
         """
-        Records audio, diarizes it, and analyzes for keywords.
+        Records audio and runs it through the full analysis pipeline, including profanity check.
         """
         # Step 1: Record and Diarize
         input_path = self.record(duration)
@@ -44,14 +49,20 @@ class AudioInterface:
             print("\n⚠️ 입력된 음성이 없었습니다. (No speech detected.)")
             return {
                 "full_transcript": [],
-                "detected_keywords": []
+                "detected_custom_keywords": [],
+                "detected_profanity": [],
+                "speech_rate_analysis": []
             }
 
-        # Step 2: Analyze for keywords
-        found_keywords = self.word_analyzer.analyze(diarized_transcript, keywords)
+        # Step 2: Run parallel analyses
+        detected_custom_words = self.word_analyzer.analyze(diarized_transcript, custom_keywords)
+        detected_profanity = self.word_analyzer.analyze(diarized_transcript, self.profanity_list)
+        speech_rate = self.speech_rate_analyzer.analyze(diarized_transcript)
 
-        # Step 3: Return all results for the frontend/feedback module
+        # Step 3: Consolidate all results
         return {
             "full_transcript": diarized_transcript,
-            "detected_keywords": found_keywords
+            "detected_custom_keywords": detected_custom_words,
+            "detected_profanity": detected_profanity,
+            "speech_rate_analysis": speech_rate
         }
