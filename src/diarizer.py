@@ -101,12 +101,18 @@ class SpeakerDiarizer:
         diarize_df = pd.DataFrame(diarization_result.itertracks(yield_label=True), columns=['segment', 'track', 'speaker'])
         
         final_speaker_mapping = {}
-        for original_label in sorted(diarize_df['speaker'].unique()):
-            if original_label == identified_user_label:
-                final_speaker_mapping[original_label] = 'User'
-            else:
-                final_speaker_mapping[original_label] = 'Others'
-        
+        # If a user was identified via enrollment, perform binary User/Others classification
+        if identified_user_label:
+            for original_label in sorted(diarize_df['speaker'].unique()):
+                if original_label == identified_user_label:
+                    final_speaker_mapping[original_label] = 'User'
+                else:
+                    final_speaker_mapping[original_label] = 'Others'
+        # Otherwise (no enrollment), use anonymous incremental speaker labels
+        else:
+            for i, original_label in enumerate(sorted(diarize_df['speaker'].unique())):
+                final_speaker_mapping[original_label] = f'SPEAKER_{i:02d}'
+
         diarize_df['speaker'] = diarize_df['speaker'].map(final_speaker_mapping)
         diarize_df['start'] = diarize_df['segment'].apply(lambda x: x.start)
         diarize_df['end'] = diarize_df['segment'].apply(lambda x: x.end)

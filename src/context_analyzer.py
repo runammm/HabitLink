@@ -1,8 +1,8 @@
 import os
 import json
 from groq import Groq
-from typing import List, Dict, Any, Optional
-from .llm_prompts import CONTEXT_ANALYSIS_PROMPT, CONTEXT_ANALYSIS_FULL_REPORT_PROMPT
+from typing import List, Dict, Any
+from .llm_prompts import CONTEXT_ANALYSIS_PROMPT
 
 class ContextAnalyzer:
     """
@@ -27,82 +27,48 @@ class ContextAnalyzer:
         """Formats the transcript list into a readable string for the LLM prompt."""
         return "\n".join([f"{segment.get('speaker', 'UNKNOWN')}: {segment.get('text', '')}" for segment in transcript])
 
-    def analyze_full_transcript(self, diarized_transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def analyze(self, diarized_transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Analyzes the entire transcript for all contextual errors to generate a post-session report.
+        Analyzes each user utterance in the context of the preceding conversation.
+        NOTE: For file-based analysis, this simulates a real-time check for every user utterance.
         """
-        if not diarized_transcript or len(diarized_transcript) < 2:
-            return []
+        analysis_results = []
+        for i, segment in enumerate(diarized_transcript):
+            # We only analyze the user's speech for contextual errors.
+            if segment.get("speaker") != self.user_speaker_id:
+                continue
 
-        formatted_transcript = self._format_history_for_prompt(diarized_transcript)
-        
-        prompt_input = f"Full Transcript:\n{formatted_transcript}"
-        full_prompt = f"{CONTEXT_ANALYSIS_FULL_REPORT_PROMPT}\n\n{prompt_input}"
+            # Context requires at least one preceding utterance.
+            if i == 0:
+                continue
 
-        try:
-            chat_completion = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": full_prompt}],
-                model=self.model,
-                response_format={"type": "json_object"},
+            conversation_history = diarized_transcript[:i]
+            latest_utterance = segment
+
+            prompt = CONTEXT_ANALYSIS_PROMPT.format(
+                history=self._format_history_for_prompt(conversation_history),
+                utterance=latest_utterance.get('text', '')
             )
-            response_content = chat_completion.choices[0].message.content
-            analysis = json.loads(response_content)
-            
-            return analysis.get("contextual_errors", []) if isinstance(analysis, dict) else []
 
-        except Exception as e:
-            print(f"Error during full context analysis: {e}")
-            return []
+            try:
+                chat_completion = self.client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=self.model,
+                    response_format={"type": "json_object"},
+                )
+                response_content = chat_completion.choices[0].message.content
+                analysis = json.loads(response_content)
 
-    def analyze_latest_utterance(self, diarized_transcript: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """
-        Analyzes the latest user utterance in the context of the full conversation for real-time feedback.
-
-        Args:
-            diarized_transcript (List[Dict[str, Any]]): The full conversation transcript.
-
-        Returns:
-            Optional[Dict[str, Any]]: A dictionary with the analysis result if a user utterance is found,
-                                      otherwise None. 
-                                      Example: {'contextual_error': True, 'reasoning': '...', 'erroneous_sentence': '...'}
-        """
-        if not diarized_transcript or len(diarized_transcript) < 2:
-            return None
-
-        latest_utterance = diarized_transcript[-1]
-        
-        if latest_utterance.get("speaker") != self.user_speaker_id:
-             return None
-
-        conversation_history = diarized_transcript[:-1]
-        
-        prompt_input = f"""
-        Utterance History:
-        {self._format_history_for_prompt(conversation_history)}
-
-        Latest Utterance:
-        {latest_utterance.get('text', '')}
-        """
-        
-        full_prompt = f"{CONTEXT_ANALYSIS_PROMPT}\n\n{prompt_input}"
-
-        try:
-            chat_completion = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": full_prompt}],
-                model=self.model,
-                response_format={"type": "json_object"},
-            )
-            response_content = chat_completion.choices[0].message.content
-            analysis = json.loads(response_content)
-
-            if analysis.get("is_error"):
-                return {
-                    "contextual_error": True,
-                    "reasoning": analysis.get("reasoning"),
-                    "erroneous_sentence": latest_utterance.get('text', ''),
-                    "timestamp": latest_utterance.get('start')
-                }
-            return {"contextual_error": False}
-        except Exception as e:
-            print(f"Error during context analysis: {e}")
-            return None
+                if analysis.get("is_error"):
+                    analysis_results.append({
+                        "contextual_error": True,
+                        "reasoning": analysis.get("reasoning"),
+                        "utterance": latest_utterance.get('text', ''),
+                        "timestamp": latest_utterance.get('start'),
+                        "speaker": latest_utterance.get('speaker')
+                    })
+            except Exception as e:
+                print(f"Error during context analysis for segment {i}: {e}")
+                continue
+                
+        return analysis_results

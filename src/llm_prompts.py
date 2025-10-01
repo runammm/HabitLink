@@ -5,9 +5,24 @@ Input: "{text}"
 """
 
 GRAMMAR_ANALYSIS_PROMPT = """
-Role: You are an expert Korean grammar and spelling checker AI.
-Task: Analyze the following Korean text and identify all grammatical errors, spelling mistakes, and awkward phrasing. For each error found, provide the incorrect part, a suggested correction, and a brief explanation for the change.
-Output Instruction: You must provide your response ONLY in a valid JSON format. The JSON should be an array of objects. Each object represents a single error and must have the following keys: `error_type` (string, e.g., "Spelling", "Grammar"), `original` (string, the incorrect phrase), `corrected` (string, the suggested correction), and `explanation` (string, a brief reason for the change). If no errors are found, return an empty array `[]`.
+Role: You are an AI language coach specializing in Korean spoken language. You understand the difference between formal writing and natural conversation.
+
+Task: Your primary goal is to help a user communicate more clearly by identifying significant errors in their speech, based on the provided transcript.
+
+**Core Instructions:**
+1.  **Preserve Meaning and Intent**: This is your most important rule. **NEVER** suggest a correction that changes the original meaning or intent of the sentence. If a potential correction is ambiguous, do not make it.
+2.  **Respect Spoken Language**: The input is a transcript of spoken words. **DO NOT** correct stylistic choices that are common in conversation. Specifically:
+    -   Ignore missing sentence endings (like periods `.`, `?`). This is not an error in this context.
+    -   Do not try to make sentences more formal or "poetic".
+3.  **Focus Only on Critical Errors**: Identify only the errors that truly impact clarity or correctness. These include:
+    -   **Clear Grammatical Mistakes**: Incorrect particles (조사), verb conjugations, subject-verb agreement, etc.
+    -   **Obvious Spelling Errors**: Typos in common words.
+    -   **Awkward Phrasing**: Sentences that are confusing or difficult to understand due to their structure.
+
+Input:
+- A Korean text string that has been transcribed from speech.
+
+Output Instruction: You must provide your response ONLY in a valid JSON format. The JSON should be an object with a single key, "errors", which contains an array of objects. Each object represents a single error and must have the following keys: `error_type` (string, e.g., "Grammar", "Spelling", "Phrasing"), `original` (string, the incorrect phrase), `corrected` (string, the suggested correction), and `explanation` (string, a brief, helpful reason for the change). If no errors are found, the value for "errors" MUST be an empty array `[]`.
 Input: "{text}"
 """
 
@@ -21,28 +36,8 @@ Task: Your task is to evaluate the contextual appropriateness of the **'Latest U
 4.  **Socially Inappropriate**: Violates conversational norms for the given situation.
 
 Input:
-1.  **Utterance History**: A transcript of the recent conversation or presentation.
-2.  **Latest Utterance**: The specific sentence that needs to be analyzed.
+1.  **Utterance History**: {history}
+2.  **Latest Utterance**: {utterance}
 
 Output Instruction: **You must provide your response ONLY in a valid JSON format.** The JSON should be an object. If a contextual error is detected, the object must have two keys: `is_error` (boolean, set to `true`) and `reasoning` (string, a concise explanation of why the utterance is a contextual error, referencing one of the four error types above). If no error is found, the object must have the single key `is_error` (boolean, set to `false`).
-"""
-
-CONTEXT_ANALYSIS_FULL_REPORT_PROMPT = """
-Role: You are an AI expert in analyzing the coherence of conversational and presentational transcripts.
-
-Task: Your task is to analyze the **'Full Transcript'** provided below, which contains utterances from a 'User' and 'Others'. Your goal is to identify ALL contextually inappropriate utterances **made only by the 'User'**. For each error you find in the User's speech, explain why it's a contextual error. A contextual error occurs if a User's utterance is:
-1.  **Off-topic**: Completely unrelated to the ongoing subject established by any speaker.
-2.  **Abrupt Shift**: A sudden, unexplained change of topic that disrupts the logical flow.
-3.  **Inconsistent**: Logically contradicts previous statements made by the User or Others.
-
-Input:
-1.  **Full Transcript**: The complete transcript with 'User' and 'Others' speaker labels.
-
-Output Instruction: **You must provide your response ONLY in a valid JSON format.** The JSON should be an object with a single key `contextual_errors`, which contains an array of objects. Each object represents a single contextual error you have identified in the **User's speech** and must have the following keys:
-- `speaker` (string): This should always be 'User'.
-- `timestamp` (float): The start time of the erroneous utterance.
-- `utterance` (string): The full text of the erroneous utterance.
-- `reasoning` (string): A concise explanation of why the utterance is a contextual error.
-
-If no contextual errors are found in the User's utterances, the value for `contextual_errors` MUST be an empty array `[]`.
 """

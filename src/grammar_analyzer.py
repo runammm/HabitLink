@@ -19,13 +19,17 @@ class GrammarAnalyzer:
         self.client = Groq(api_key=api_key)
         self.model = model
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, is_json: bool = False) -> str:
         """A helper method to call the LLM API."""
         try:
-            chat_completion = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model,
-            )
+            kwargs = {
+                "messages": [{"role": "user", "content": prompt}],
+                "model": self.model,
+            }
+            if is_json:
+                kwargs["response_format"] = {"type": "json_object"}
+            
+            chat_completion = self.client.chat.completions.create(**kwargs)
             return chat_completion.choices[0].message.content
         except Exception as e:
             print(f"Error calling Groq API: {e}")
@@ -44,13 +48,18 @@ class GrammarAnalyzer:
 
         # Step 2: Find grammatical errors in the corrected text
         grammar_prompt = GRAMMAR_ANALYSIS_PROMPT.format(text=corrected_text)
-        response_str = self._call_llm(grammar_prompt)
+        response_str = self._call_llm(grammar_prompt, is_json=True)
         
         try:
-            # Clean the response string in case the LLM includes markdown formatting
-            clean_response = response_str.strip().replace('```json', '').replace('```', '')
-            errors = json.loads(clean_response)
-            return errors if isinstance(errors, list) else []
+            data = json.loads(response_str)
+            if isinstance(data, dict) and 'errors' in data:
+                errors = data['errors']
+                return errors if isinstance(errors, list) else []
+            # Fallback for cases where the LLM might still return a raw list
+            elif isinstance(data, list):
+                return data
+            print(f"Warning: JSON response did not contain 'errors' key. Response: {response_str}")
+            return []
         except (json.JSONDecodeError, TypeError):
             print(f"Warning: Failed to parse LLM response into JSON. Response: {response_str}")
             return []
@@ -62,12 +71,11 @@ class GrammarAnalyzer:
         analysis_results = []
         for segment in diarized_transcript:
             text = segment.get("text", "")
-            if not text:
+            if not text or not text.strip():
                 continue
             
             errors = self._get_structured_errors(text)
             if errors:
-                # Associate each found error with its original context
                 for error in errors:
                     analysis_results.append({
                         "speaker": segment.get("speaker"),
