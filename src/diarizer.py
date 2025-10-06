@@ -21,7 +21,7 @@ class SpeakerDiarizer:
         self.device = device
         self.batch_size = batch_size
         self.compute_type = compute_type
-        self.asr_model = whisperx.load_model("small", self.device, compute_type=self.compute_type, language="ko")
+        self.asr_model = whisperx.load_model("base", self.device, compute_type=self.compute_type, language="ko")
         
         hf_token = os.getenv("HUGGING_FACE_TOKEN")
         if not hf_token:

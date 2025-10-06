@@ -1,22 +1,22 @@
+import asyncio
 from .audio_engine import AudioEngine
 from .diarizer import SpeakerDiarizer
 from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
-from .grammar_analyzer import GrammarAnalyzer
-from .context_analyzer import ContextAnalyzer
+from .text_analyzer import TextAnalyzer
 from .utils import load_profanity_list
 from typing import List, Dict, Any
+import concurrent.futures
 
 class AudioInterface:
     def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, 
                  word_analyzer: WordAnalyzer, speech_rate_analyzer: SpeechRateAnalyzer,
-                 grammar_analyzer: GrammarAnalyzer, context_analyzer: ContextAnalyzer):
+                 text_analyzer: TextAnalyzer):
         self.audio_engine = audio_engine
         self.diarizer = diarizer
         self.word_analyzer = word_analyzer
         self.speech_rate_analyzer = speech_rate_analyzer
-        self.grammar_analyzer = grammar_analyzer
-        self.context_analyzer = context_analyzer
+        self.text_analyzer = text_analyzer
         # Load the profanity list once during initialization
         self.profanity_list = load_profanity_list()
 
@@ -41,7 +41,7 @@ class AudioInterface:
     def record(self, duration: float, output_path: str = "temp.wav"):
         return self.audio_engine.record(duration, output_path)
     
-    def record_and_process(self, duration: float, custom_keywords: List[str]) -> Dict[str, Any]:
+    async def record_and_process(self, duration: float, custom_keywords: List[str]) -> Dict[str, Any]:
         """
         Records audio and runs it through the full analysis pipeline, including profanity check.
         """
@@ -61,12 +61,24 @@ class AudioInterface:
                 "context_analysis_report": []
             }
 
-        # Step 2: Run parallel analyses
-        detected_custom_words = self.word_analyzer.analyze(diarized_transcript, custom_keywords)
-        detected_profanity = self.word_analyzer.analyze(diarized_transcript, self.profanity_list)
-        speech_rate = self.speech_rate_analyzer.analyze(diarized_transcript)
-        grammar_errors = self.grammar_analyzer.analyze(diarized_transcript)
-        context_analysis_report = self.context_analyzer.analyze_full_transcript(diarized_transcript)
+        # Step 2: Run all analyses concurrently
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            custom_kw_task = loop.run_in_executor(
+                pool, self.word_analyzer.analyze, diarized_transcript, custom_keywords
+            )
+            profanity_task = loop.run_in_executor(
+                pool, self.word_analyzer.analyze, diarized_transcript, self.profanity_list
+            )
+            speech_rate_task = loop.run_in_executor(
+                pool, self.speech_rate_analyzer.analyze, diarized_transcript
+            )
+
+            llm_analysis_task = self.text_analyzer.analyze(diarized_transcript)
+
+            detected_custom_words, detected_profanity, speech_rate, llm_results = await asyncio.gather(
+                custom_kw_task, profanity_task, speech_rate_task, llm_analysis_task
+            )
 
         # Step 3: Consolidate all results
         return {
@@ -74,6 +86,6 @@ class AudioInterface:
             "detected_custom_keywords": detected_custom_words,
             "detected_profanity": detected_profanity,
             "speech_rate_analysis": speech_rate,
-            "grammar_analysis": grammar_errors,
-            "context_analysis_report": context_analysis_report
+            "grammar_analysis": llm_results.get("grammar_errors", []),
+            "context_analysis_report": llm_results.get("context_errors", [])
         }

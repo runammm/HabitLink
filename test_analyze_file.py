@@ -1,6 +1,7 @@
 import os
 import logging
 import traceback
+import asyncio
 from collections import defaultdict
 from dotenv import load_dotenv
 import concurrent.futures
@@ -8,8 +9,8 @@ import concurrent.futures
 from src.diarizer import SpeakerDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
-from src.grammar_analyzer import GrammarAnalyzer
-from src.context_analyzer import ContextAnalyzer
+from src.text_analyzer import TextAnalyzer
+from src.utils import load_profanity_list
 
 # --- Suppress library warnings ---
 logging.getLogger('pyannote').setLevel(logging.WARNING)
@@ -19,7 +20,7 @@ os.environ["PYTORCH_SUPPRESS_DEPRECATION_WARNINGS"] = "1"
 os.environ["PL_SUPPRESS_FORK"] = "1"
 # ---------------------------------
 
-def analyze_audio_file(file_path: str):
+async def analyze_audio_file(file_path: str):
     """
     Analyzes a given audio file using the full analysis pipeline without user enrollment.
     """
@@ -39,17 +40,13 @@ def analyze_audio_file(file_path: str):
 
     try:
         # 1. Initialize all analysis components
-        # Note: We do not initialize AudioEngine as we are not recording.
         diarizer = SpeakerDiarizer()
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()
-        grammar_analyzer = GrammarAnalyzer()
-        # For file analysis, we analyze all speakers, so we pass a wildcard or default speaker ID
-        # The logic inside the analyzer will determine what to do based on the prompt.
-        context_analyzer = ContextAnalyzer()
-
+        text_analyzer = TextAnalyzer()
+        
         # 2. Process the audio file to get a diarized transcript
-        # Since we skipped enroll_user, the diarizer will use anonymous labels (SPEAKER_00, etc.)
+        # This part is CPU-bound and remains synchronous.
         print("\n--- 🔊 Performing speaker diarization and transcription ---")
         diarized_transcript = diarizer.process(file_path)
         
@@ -59,22 +56,32 @@ def analyze_audio_file(file_path: str):
         
         print("✅ Diarization complete.")
 
-        # 3. Run all subsequent analyses on the transcript
+        # 3. Run all subsequent analyses on the transcript concurrently
         print("\n--- 📊 Running text analysis modules ---")
         
-        # Word and speech rate analyses are local and fast.
-        keywords_to_find = []
-        # For this test, we won't analyze for custom keywords.
-        found_keywords = word_analyzer.analyze(diarized_transcript, keywords_to_find)
-        from src.utils import load_profanity_list
-        profanity_list = load_profanity_list()
-        detected_profanity = word_analyzer.analyze(diarized_transcript, profanity_list)
-        speech_rate_analysis = speech_rate_analyzer.analyze(diarized_transcript)
+        # Local, CPU-bound analyses can run concurrently in a thread pool
+        # to not block the async event loop.
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            profanity_list = await loop.run_in_executor(pool, load_profanity_list)
+            
+            profanity_task = loop.run_in_executor(
+                pool, word_analyzer.analyze, diarized_transcript, profanity_list
+            )
+            speech_rate_task = loop.run_in_executor(
+                pool, speech_rate_analyzer.analyze, diarized_transcript
+            )
 
-        # Grammar and Context analysis involve network calls.
-        # We run them sequentially as per the original design.
-        grammar_analysis = grammar_analyzer.analyze(diarized_transcript)
-        context_analysis_report = context_analyzer.analyze(diarized_transcript)
+            # LLM-based analysis is I/O-bound and runs asynchronously.
+            llm_analysis_task = text_analyzer.analyze(diarized_transcript)
+
+            # Gather all results
+            detected_profanity, speech_rate_analysis, llm_analysis_results = await asyncio.gather(
+                profanity_task, speech_rate_task, llm_analysis_task
+            )
+
+        grammar_analysis = llm_analysis_results.get("grammar_errors", [])
+        context_analysis_report = llm_analysis_results.get("context_errors", [])
 
         print("✅ Text analysis complete.")
 
@@ -149,6 +156,6 @@ def analyze_audio_file(file_path: str):
         print("-----------------------------------------")
 
 if __name__ == "__main__":
-    audio_file_to_analyze = "data/test_audio/2.wav"
+    audio_file_to_analyze = "data/test_audio/1.wav"
     
-    analyze_audio_file(audio_file_to_analyze)
+    asyncio.run(analyze_audio_file(audio_file_to_analyze))
