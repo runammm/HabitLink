@@ -6,7 +6,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import concurrent.futures
 
-from src.diarizer import SpeakerDiarizer
+from src.diarizer import SpeakerDiarizer, GoogleSTTDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
 from src.text_analyzer import TextAnalyzer
@@ -18,6 +18,11 @@ logging.getLogger('torchaudio').setLevel(logging.ERROR)
 logging.getLogger('speechbrain').setLevel(logging.ERROR)
 os.environ["PYTORCH_SUPPRESS_DEPRECATION_WARNINGS"] = "1"
 os.environ["PL_SUPPRESS_FORK"] = "1"
+
+# --- Configuration ---
+USE_GCP_STT = True  # Set to False to use the local WhisperX model
+# ---------------------
+
 # ---------------------------------
 
 async def analyze_audio_file(file_path: str):
@@ -40,7 +45,15 @@ async def analyze_audio_file(file_path: str):
 
     try:
         # 1. Initialize all analysis components
-        diarizer = SpeakerDiarizer()
+        if USE_GCP_STT:
+            # Ensure you have run 'gcloud auth application-default login'
+            # or set GOOGLE_APPLICATION_CREDENTIALS in your .env file.
+            print("Using Google Cloud STT for diarization.")
+            diarizer = GoogleSTTDiarizer()
+        else:
+            print("Using local WhisperX for diarization.")
+            diarizer = SpeakerDiarizer()
+            
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()
         text_analyzer = TextAnalyzer()

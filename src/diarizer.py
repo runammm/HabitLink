@@ -127,6 +127,104 @@ class SpeakerDiarizer:
         return final_result.get("segments", [])
 
 
+from google.cloud import speech
+import soundfile as sf
+
+class GoogleSTTDiarizer:
+    """
+    A class to perform transcription and speaker diarization using Google Cloud STT.
+    """
+    def __init__(self):
+        """
+        Initializes the GoogleSTTDiarizer.
+        """
+        self.client = speech.SpeechClient()
+
+    def process(self, audio_path: str) -> list[dict]:
+        """
+        Transcribes an audio file and performs speaker diarization using Google Cloud STT.
+
+        Args:
+            audio_path (str): The path to the audio file.
+
+        Returns:
+            list[dict]: A list of transcribed segments with speaker labels and timestamps,
+                        matching the format of the WhisperX-based SpeakerDiarizer.
+        """
+        with open(audio_path, "rb") as audio_file:
+            content = audio_file.read()
+        
+        audio_info = sf.info(audio_path)
+        sample_rate = audio_info.samplerate
+
+        audio = speech.RecognitionAudio(content=content)
+
+        # Configuration for speaker diarization
+        diarization_config = speech.SpeakerDiarizationConfig(
+            enable_speaker_diarization=True,
+            min_speaker_count=1,
+            max_speaker_count=6,  # Adjust as needed
+        )
+
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=sample_rate,
+            language_code="ko-KR",
+            diarization_config=diarization_config,
+            enable_word_time_offsets=True,
+            enable_automatic_punctuation=True,
+        )
+
+        print("Sending request to Google Cloud STT...")
+        operation = self.client.long_running_recognize(config=config, audio=audio)
+        
+        print("Waiting for Google Cloud STT to complete...")
+        response = operation.result(timeout=300)  # Timeout in seconds
+        print("Received response from Google Cloud STT.")
+
+        # The last result contains the final transcript with speaker tags.
+        if not response.results:
+            return []
+
+        # Get the last result which has the speaker diarization information
+        result = response.results[-1]
+        
+        segments = []
+        if result.alternatives and result.alternatives[0].words:
+            words = result.alternatives[0].words
+            
+            current_speaker_tag = words[0].speaker_tag
+            current_segment_text = []
+            segment_start_time = words[0].start_time.total_seconds()
+
+            for word in words:
+                if word.speaker_tag != current_speaker_tag:
+                    # Finalize the previous segment
+                    segments.append({
+                        "text": " ".join(current_segment_text).strip(),
+                        "start": segment_start_time,
+                        "end": words[words.index(word) - 1].end_time.total_seconds(),
+                        "speaker": f"SPEAKER_{current_speaker_tag:02d}"
+                    })
+                    
+                    # Start a new segment
+                    current_speaker_tag = word.speaker_tag
+                    current_segment_text = [word.word]
+                    segment_start_time = word.start_time.total_seconds()
+                else:
+                    current_segment_text.append(word.word)
+            
+            # Add the last segment
+            segments.append({
+                "text": " ".join(current_segment_text).strip(),
+                "start": segment_start_time,
+                "end": words[-1].end_time.total_seconds(),
+                "speaker": f"SPEAKER_{current_speaker_tag:02d}"
+            })
+
+        return segments
+
+
 if __name__ == '__main__':
     # This is a test script to verify the functionality.
     # To run this, you need a multi-speaker audio file.

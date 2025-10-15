@@ -12,3 +12,6 @@ torch
 torchaudio
 scipy
 whisperx @ git+https://github.com/m-bain/whisperx.git
+
+# Added for Google Cloud STT
+google-cloud-speech

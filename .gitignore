@@ -1,2 +1,8 @@
+# Environment variables
 .env
+
+# Google Cloud Platform credentials
+*.json
+
+# IDE settings
 .idea/*
