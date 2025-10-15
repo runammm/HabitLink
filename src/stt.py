@@ -9,7 +9,7 @@ import pandas as pd
 
 load_dotenv()
 
-class SpeakerDiarizer:
+class WhisperXDiarizer:
     """
     A class to perform transcription and multi-speaker diarization,
     identifying a pre-enrolled user among the speakers.
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     # 2. Set your HUGGING_FACE_TOKEN in a .env file.
     # 3. Run this script directly: python -m src.diarizer
 
-    print("Testing SpeakerDiarizer...")
+    print("Testing WhisperXDiarizer...")
     
     # Create a dummy audio file for testing if it doesn't exist.
     # This dummy file won't produce a meaningful diarization result but will prevent crashes.
@@ -253,7 +253,7 @@ if __name__ == '__main__':
 
     try:
         # Initialize the diarizer
-        diarizer = SpeakerDiarizer()
+        diarizer = WhisperXDiarizer()
         
         # Process the audio file
         print(f"Processing '{TEST_AUDIO_PATH}'...")

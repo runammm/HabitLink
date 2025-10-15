@@ -6,7 +6,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import concurrent.futures
 
-from src.diarizer import SpeakerDiarizer, GoogleSTTDiarizer
+from src.stt import WhisperXDiarizer, GoogleSTTDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
 from src.text_analyzer import TextAnalyzer
@@ -52,7 +52,7 @@ async def analyze_audio_file(file_path: str):
             diarizer = GoogleSTTDiarizer()
         else:
             print("Using local WhisperX for diarization.")
-            diarizer = SpeakerDiarizer()
+            diarizer = WhisperXDiarizer()
             
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()

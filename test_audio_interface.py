@@ -1,11 +1,11 @@
 import os
 import logging
+import asyncio
 from src.audio_engine import AudioEngine
-from src.diarizer import SpeakerDiarizer
+from src.stt import WhisperXDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
-from src.grammar_analyzer import GrammarAnalyzer
-from src.context_analyzer import ContextAnalyzer
+from src.text_analyzer import TextAnalyzer
 from src.audio_interface import AudioInterface
 from dotenv import load_dotenv
 import traceback
@@ -39,20 +39,18 @@ else:
     try:
         # 1. Initialize the core components
         audio_engine = AudioEngine()
-        diarizer = SpeakerDiarizer()
+        diarizer = WhisperXDiarizer()
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()
-        grammar_analyzer = GrammarAnalyzer()
-        context_analyzer = ContextAnalyzer()
+        text_analyzer = TextAnalyzer()
 
-        # 2. Initialize the interface with the new components
+        # 2. Initialize the interface with the components
         audio_interface = AudioInterface(
             audio_engine, 
             diarizer, 
             word_analyzer, 
-            speech_rate_analyzer, 
-            grammar_analyzer,
-            context_analyzer
+            speech_rate_analyzer,
+            text_analyzer
         )
 
         # 3. Guide user through voice enrollment
@@ -69,7 +67,7 @@ else:
         print(f"Recording conversation for {record_duration} seconds...")
         
         # 6. Run the recording, diarization, and analysis process
-        analysis_result = audio_interface.record_and_process(record_duration, keywords_to_find)
+        analysis_result = asyncio.run(audio_interface.record_and_process(record_duration, keywords_to_find))
 
         # 7. Print the results
         diarized_transcript = analysis_result["full_transcript"]

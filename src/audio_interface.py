@@ -1,15 +1,15 @@
 import asyncio
 from .audio_engine import AudioEngine
-from .diarizer import SpeakerDiarizer
+from .stt import WhisperXDiarizer, GoogleSTTDiarizer
 from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
 from .text_analyzer import TextAnalyzer
 from .utils import load_profanity_list
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 import concurrent.futures
 
 class AudioInterface:
-    def __init__(self, audio_engine: AudioEngine, diarizer: SpeakerDiarizer, 
+    def __init__(self, audio_engine: AudioEngine, diarizer: Union[WhisperXDiarizer, GoogleSTTDiarizer], 
                  word_analyzer: WordAnalyzer, speech_rate_analyzer: SpeechRateAnalyzer,
                  text_analyzer: TextAnalyzer):
         self.audio_engine = audio_engine
@@ -23,7 +23,14 @@ class AudioInterface:
     def enroll_user(self, duration: float = 15.0):
         """
         Guides the user through the voice enrollment process.
+        Note: This feature is only available with WhisperXDiarizer.
         """
+        # Check if the diarizer supports enrollment
+        if not hasattr(self.diarizer, 'enroll_user_voice'):
+            print("⚠️ User enrollment is not supported with the current STT engine (Google Cloud STT).")
+            print("User enrollment is only available when using WhisperXDiarizer.")
+            return
+        
         enroll_text = "안녕하세요, HabitLink입니다. 지금부터 음성 등록을 시작하겠습니다. 아래의 문장을 평소처럼 편하게 읽어주세요."
         reading_text = "죽는 날까지 하늘을 우러러 한 점 부끄럼이 없기를, 잎새에 이는 바람에도 나는 괴로워했다. 오늘 밤에도 별이 바람에 스치운다."
         print("\n--- 🗣️ User Voice Enrollment ---")
