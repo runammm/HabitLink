@@ -6,3 +6,6 @@
 
 # IDE settings
 .idea/*
+
+# Data files
+.data/*

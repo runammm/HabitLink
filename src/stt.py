@@ -182,45 +182,96 @@ class GoogleSTTDiarizer:
         response = operation.result(timeout=300)  # Timeout in seconds
         print("Received response from Google Cloud STT.")
 
-        # The last result contains the final transcript with speaker tags.
         if not response.results:
             return []
-
-        # Get the last result which has the speaker diarization information
-        result = response.results[-1]
         
+        # Collect all words with speaker tags from all results
+        all_words = []
+        for result in response.results:
+            if result.alternatives and result.alternatives[0].words:
+                words_in_result = result.alternatives[0].words
+                for word in words_in_result:
+                    all_words.append(word)
+        
+        if not all_words:
+            return []
+        
+        # Remove duplicates based on start_time
+        # Google Cloud STT can return duplicate words with different speaker tags in multiple results
+        # Keep the LAST occurrence as later results contain more complete diarization info
+        seen_timestamps = {}
+        for word in all_words:
+            # Handle timedelta, Duration objects, and float timestamps
+            try:
+                timestamp = word.start_time.total_seconds()
+            except (AttributeError, TypeError):
+                try:
+                    timestamp = word.start_time.seconds + word.start_time.nanos / 1e9
+                except AttributeError:
+                    timestamp = float(word.start_time)
+            
+            timestamp_key = round(timestamp, 3)
+            seen_timestamps[timestamp_key] = word
+        
+        # Sort by timestamp to maintain chronological order
+        all_words = [seen_timestamps[ts] for ts in sorted(seen_timestamps.keys())]
+        
+        # Helper function to safely extract timestamp
+        def get_time(time_obj):
+            try:
+                # Try timedelta (has total_seconds method)
+                return time_obj.total_seconds()
+            except (AttributeError, TypeError):
+                try:
+                    # Try Duration object (Google Cloud STT format)
+                    return time_obj.seconds + time_obj.nanos / 1e9
+                except AttributeError:
+                    # Try float/int
+                    return float(time_obj)
+        
+        # Group words into segments by speaker
         segments = []
-        if result.alternatives and result.alternatives[0].words:
-            words = result.alternatives[0].words
-            
-            current_speaker_tag = words[0].speaker_tag
-            current_segment_text = []
-            segment_start_time = words[0].start_time.total_seconds()
+        current_speaker_tag = all_words[0].speaker_tag
+        current_segment_text = []
+        current_segment_words = []
+        segment_start_time = get_time(all_words[0].start_time)
 
-            for word in words:
-                if word.speaker_tag != current_speaker_tag:
-                    # Finalize the previous segment
-                    segments.append({
-                        "text": " ".join(current_segment_text).strip(),
-                        "start": segment_start_time,
-                        "end": words[words.index(word) - 1].end_time.total_seconds(),
-                        "speaker": f"SPEAKER_{current_speaker_tag:02d}"
-                    })
-                    
-                    # Start a new segment
-                    current_speaker_tag = word.speaker_tag
-                    current_segment_text = [word.word]
-                    segment_start_time = word.start_time.total_seconds()
-                else:
-                    current_segment_text.append(word.word)
-            
-            # Add the last segment
-            segments.append({
-                "text": " ".join(current_segment_text).strip(),
-                "start": segment_start_time,
-                "end": words[-1].end_time.total_seconds(),
-                "speaker": f"SPEAKER_{current_speaker_tag:02d}"
-            })
+        for i, word in enumerate(all_words):
+            if word.speaker_tag != current_speaker_tag:
+                # Finalize the previous segment
+                segments.append({
+                    "text": " ".join(current_segment_text).strip(),
+                    "start": segment_start_time,
+                    "end": get_time(all_words[i - 1].end_time),
+                    "speaker": f"SPEAKER_{current_speaker_tag:02d}",
+                    "words": current_segment_words
+                })
+                
+                # Start a new segment
+                current_speaker_tag = word.speaker_tag
+                current_segment_text = [word.word]
+                current_segment_words = [{
+                    "word": word.word,
+                    "start": get_time(word.start_time),
+                    "end": get_time(word.end_time)
+                }]
+                segment_start_time = get_time(word.start_time)
+            else:
+                current_segment_text.append(word.word)
+                current_segment_words.append({
+                    "word": word.word,
+                    "start": get_time(word.start_time),
+                    "end": get_time(word.end_time)
+                })
+        
+        # Add the last segment
+        segments.append({
+            "text": " ".join(current_segment_text).strip(),
+            "start": segment_start_time,
+            "end": get_time(all_words[-1].end_time),
+            "speaker": f"SPEAKER_{current_speaker_tag:02d}",
+            "words": current_segment_words
+        })
 
         return segments
 

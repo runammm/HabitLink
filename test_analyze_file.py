@@ -25,9 +25,13 @@ USE_GCP_STT = True  # Set to False to use the local WhisperX model
 
 # ---------------------------------
 
-async def analyze_audio_file(file_path: str):
+async def analyze_audio_file(file_path: str, target_keywords: list = None):
     """
     Analyzes a given audio file using the full analysis pipeline without user enrollment.
+    
+    Args:
+        file_path (str): Path to the audio file to analyze.
+        target_keywords (list): List of specific keywords to detect in the audio.
     """
     load_dotenv()
 
@@ -42,6 +46,8 @@ async def analyze_audio_file(file_path: str):
         return
 
     print(f"🚀 Initializing components to analyze '{file_path}'...")
+    if target_keywords:
+        print(f"🔍 Will search for keywords: {', '.join(target_keywords)}")
 
     try:
         # 1. Initialize all analysis components
@@ -81,6 +87,15 @@ async def analyze_audio_file(file_path: str):
             profanity_task = loop.run_in_executor(
                 pool, word_analyzer.analyze, diarized_transcript, profanity_list
             )
+            
+            # Add keyword detection task if keywords are provided
+            if target_keywords:
+                keyword_task = loop.run_in_executor(
+                    pool, word_analyzer.analyze, diarized_transcript, target_keywords
+                )
+            else:
+                keyword_task = asyncio.sleep(0, result=[])  # Empty result if no keywords
+                
             speech_rate_task = loop.run_in_executor(
                 pool, speech_rate_analyzer.analyze, diarized_transcript
             )
@@ -89,8 +104,8 @@ async def analyze_audio_file(file_path: str):
             llm_analysis_task = text_analyzer.analyze(diarized_transcript)
 
             # Gather all results
-            detected_profanity, speech_rate_analysis, llm_analysis_results = await asyncio.gather(
-                profanity_task, speech_rate_task, llm_analysis_task
+            detected_profanity, detected_keywords, speech_rate_analysis, llm_analysis_results = await asyncio.gather(
+                profanity_task, keyword_task, speech_rate_task, llm_analysis_task
             )
 
         grammar_analysis = llm_analysis_results.get("grammar_errors", [])
@@ -122,6 +137,20 @@ async def analyze_audio_file(file_path: str):
                 print(f"'{profanity}': {len(items)}회 검출")
                 for item in items:
                     print(f"  - {item['timestamp']:.2f}s ({item['speaker']})")
+
+        # Keyword Detection
+        if target_keywords:
+            print("\n--- 🔍 Keyword Detection ---")
+            if not detected_keywords:
+                print("No target keywords detected.")
+            else:
+                summary = defaultdict(list)
+                for item in detected_keywords:
+                    summary[item['keyword'].lower()].append(item)
+                for keyword, items in summary.items():
+                    print(f"'{keyword}': {len(items)}회 검출")
+                    for item in items:
+                        print(f"  - {item['timestamp']:.2f}s ({item['speaker']})")
 
         # Speech Rate Analysis
         print("\n--- 🏃 Speech Rate Analysis ---")
@@ -169,6 +198,20 @@ async def analyze_audio_file(file_path: str):
         print("-----------------------------------------")
 
 if __name__ == "__main__":
-    audio_file_to_analyze = "data/test_audio/1.wav"
+    # audio_file_to_analyze = "data/test_audio/1.wav"
+    audio_file_to_analyze = "data/dialect_sample/raw_data/gyeongsang/solo_question/4.wav"
+    # audio_file_to_analyze = "data/dialect_sample/raw_data/gangwon/conversation/16.wav"
+    # audio_file_to_analyze = "data/broadcast_sample/raw_data/034/broadcast_00033001.wav"
     
-    asyncio.run(analyze_audio_file(audio_file_to_analyze))
+    # Get target keywords from user input
+    print("=" * 50)
+    print("🎯 Audio File Analysis")
+    print("=" * 50)
+    keywords_input = input("\n검출할 특정 단어를 입력하세요 (콤마로 구분, 예: 지금, 이제, 근데, 약간): ").strip()
+    
+    target_keywords = None
+    if keywords_input:
+        target_keywords = [kw.strip() for kw in keywords_input.split(",") if kw.strip()]
+    
+    print("\n")
+    asyncio.run(analyze_audio_file(audio_file_to_analyze, target_keywords))

@@ -1,18 +1,21 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 class SpeechRateAnalyzer:
     """
     Analyzes diarized transcript segments to calculate speech rate metrics (WPS and WPM).
     """
-    def __init__(self, tokenizer_method: str = 'simple'):
+    def __init__(self, tokenizer_method: str = 'simple', target_wpm: Optional[float] = None):
         """
         Initializes the SpeechRateAnalyzer.
 
         Args:
             tokenizer_method (str): The method for counting words. 'simple' for whitespace splitting.
                                     (Future versions could support 'mecab', 'okt', etc.)
+            target_wpm (Optional[float]): The user's target speaking rate in WPM. 
+                                          If set, analysis will include comparisons to this target.
         """
         self.tokenizer_method = tokenizer_method
+        self.target_wpm = target_wpm
 
     def _count_words(self, text: str) -> int:
         """
@@ -24,6 +27,15 @@ class SpeechRateAnalyzer:
         else:
             # Default to simple splitting if method is unknown
             return len(text.split())
+
+    def set_target_wpm(self, target_wpm: float):
+        """
+        Sets the target WPM for speech rate comparison.
+        
+        Args:
+            target_wpm (float): The user's desired speaking rate in words per minute.
+        """
+        self.target_wpm = target_wpm
 
     def analyze(self, diarized_transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -37,7 +49,7 @@ class SpeechRateAnalyzer:
             List[Dict[str, Any]]: 
                 A list of dictionaries, each containing speech rate analysis for a segment.
                 Example: [{'speaker': 'SPEAKER_00', 'start': 10.5, 'end': 15.0, 'duration': 4.5, 
-                           'word_count': 15, 'wps': 3.33, 'wpm': 200.0}]
+                           'word_count': 15, 'wps': 3.33, 'wpm': 200.0, 'comparison': 'too_fast'}]
         """
         rate_analysis_results = []
 
@@ -57,7 +69,7 @@ class SpeechRateAnalyzer:
             wps = word_count / duration
             wpm = wps * 60
 
-            rate_analysis_results.append({
+            result = {
                 "speaker": segment.get("speaker"),
                 "start": start_time,
                 "end": end_time,
@@ -65,6 +77,19 @@ class SpeechRateAnalyzer:
                 "word_count": word_count,
                 "wps": round(wps, 2),
                 "wpm": round(wpm, 2)
-            })
+            }
+
+            # Add comparison if target_wpm is set
+            if self.target_wpm is not None:
+                # Allow 20% tolerance
+                tolerance = self.target_wpm * 0.2
+                if wpm > self.target_wpm + tolerance:
+                    result["comparison"] = "too_fast"
+                elif wpm < self.target_wpm - tolerance:
+                    result["comparison"] = "too_slow"
+                else:
+                    result["comparison"] = "good"
+
+            rate_analysis_results.append(result)
 
         return rate_analysis_results
