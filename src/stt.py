@@ -294,16 +294,19 @@ class GoogleSTTStreaming:
     # Streaming time limit (4 minutes to be safe, GCP limit is 5 minutes)
     STREAMING_LIMIT = 240
     
-    def __init__(self, callback: Optional[Callable] = None):
+    def __init__(self, callback: Optional[Callable] = None, audio_callback: Optional[Callable] = None):
         """
         Initialize the streaming STT client.
         
         Args:
             callback: Optional callback function to receive transcription results
                      Signature: callback(transcript: str, is_final: bool, speaker: str)
+            audio_callback: Optional callback function to receive audio chunks
+                          Signature: audio_callback(audio_chunk: bytes)
         """
         self.client = speech.SpeechClient()
         self.callback = callback
+        self.audio_callback = audio_callback
         self.audio_queue = Queue()
         self.is_running = False
         self.restart_counter = 0
@@ -367,16 +370,28 @@ class GoogleSTTStreaming:
             # Extract transcript
             transcript = result.alternatives[0].transcript
             
-            # Get timing information
-            result_seconds = 0
-            result_nanos = 0
+            # Get timing information with flexible type handling
+            result_milliseconds = 0
             
             if result.result_end_time:
-                result_seconds = result.result_end_time.seconds
-                result_nanos = result.result_end_time.nanos
+                try:
+                    # Try Duration object (has .seconds and .nanos)
+                    result_seconds = result.result_end_time.seconds
+                    result_nanos = result.result_end_time.nanos
+                    result_milliseconds = int((result_seconds * 1000) + (result_nanos / 1000000))
+                except AttributeError:
+                    try:
+                        # Try timedelta object (has .total_seconds())
+                        result_milliseconds = int(result.result_end_time.total_seconds() * 1000)
+                    except AttributeError:
+                        # Fallback: try as float
+                        try:
+                            result_milliseconds = int(float(result.result_end_time) * 1000)
+                        except (ValueError, TypeError):
+                            result_milliseconds = 0
             
-            stream_time = self.STREAMING_LIMIT * self.restart_counter
-            self.result_end_time = int((result_seconds * 1000) + (result_nanos / 1000000))
+            stream_time = self.STREAMING_LIMIT * self.restart_counter * 1000
+            self.result_end_time = result_milliseconds
             
             corrected_time = (
                 self.result_end_time - self.bridging_offset + stream_time
@@ -439,6 +454,57 @@ class GoogleSTTStreaming:
                     break
                 
                 self.audio_input = []
+                
+                # Start microphone reading thread FIRST
+                mic_thread_active = True
+                import threading
+                
+                def fill_buffer():
+                    """Continuously collect audio from microphone and add to queue."""
+                    nonlocal mic_thread_active
+                    stream_start_time = self.get_current_time()
+                    
+                    while mic_thread_active and self.is_running:
+                        try:
+                            # Check if we've hit the streaming limit
+                            if (self.get_current_time() - stream_start_time) > (self.STREAMING_LIMIT * 1000):
+                                break
+                            
+                            # Read audio chunk
+                            data = mic_stream.read(self.CHUNK, exception_on_overflow=False)
+                            
+                            # Add to queue for streaming
+                            self.audio_queue.put(data)
+                            
+                            # Store for bridging
+                            self.audio_input.append(data)
+                            
+                            # Send to audio callback if provided (for UI visualization)
+                            if self.audio_callback:
+                                try:
+                                    self.audio_callback(data)
+                                except Exception as e:
+                                    pass  # Don't let callback errors stop audio capture
+                            
+                        except Exception as e:
+                            if mic_thread_active and self.is_running:
+                                print(f"⚠️ Error reading microphone: {e}")
+                            break
+                
+                mic_thread = threading.Thread(target=fill_buffer, daemon=True)
+                mic_thread.start()
+                
+                # Wait for buffer to fill sufficiently (at least 10 chunks)
+                print("버퍼링 중...")
+                max_wait = 2.0  # Maximum 2 seconds
+                wait_start = time.time()
+                while self.audio_queue.qsize() < 10 and (time.time() - wait_start) < max_wait:
+                    time.sleep(0.1)
+                
+                buffer_size = self.audio_queue.qsize()
+                print(f"버퍼 준비 완료 ({buffer_size} chunks)")
+                
+                # Now create audio stream generator
                 audio_stream = self.audio_generator()
                 
                 # Configure streaming recognition
@@ -465,51 +531,20 @@ class GoogleSTTStreaming:
                 )
                 
                 # Make streaming request
-                responses = self.client.streaming_recognize(
-                    config=streaming_config,
-                    requests=audio_requests,
-                )
-                
-                # Start microphone reading thread
-                mic_thread_active = True
-                
-                def fill_buffer():
-                    """Continuously collect audio from microphone and add to queue."""
-                    nonlocal mic_thread_active
-                    stream_start_time = self.get_current_time()
-                    
-                    while mic_thread_active and self.is_running:
-                        try:
-                            # Check if we've hit the streaming limit
-                            if (self.get_current_time() - stream_start_time) > (self.STREAMING_LIMIT * 1000):
-                                break
-                            
-                            # Read audio chunk
-                            data = mic_stream.read(self.CHUNK, exception_on_overflow=False)
-                            
-                            # Add to queue for streaming
-                            self.audio_queue.put(data)
-                            
-                            # Store for bridging
-                            self.audio_input.append(data)
-                            
-                        except Exception as e:
-                            print(f"⚠️ Error reading microphone: {e}")
-                            break
-                
-                import threading
-                mic_thread = threading.Thread(target=fill_buffer)
-                mic_thread.start()
-                
-                # Process responses
                 try:
+                    responses = self.client.streaming_recognize(
+                        config=streaming_config,
+                        requests=audio_requests,
+                    )
+                    
+                    # Process responses
                     self.listen_print_loop(responses)
                 except Exception as e:
                     print(f"\n⚠️ Stream error: {e}")
                 
                 # Stop microphone thread
                 mic_thread_active = False
-                mic_thread.join()
+                mic_thread.join(timeout=2)
                 
                 # Signal end of stream
                 self.audio_queue.put(None)
@@ -530,7 +565,7 @@ class GoogleSTTStreaming:
                     self.restart_counter += 1
                     
                     # Brief pause before reconnecting
-                    time.sleep(0.1)
+                    time.sleep(0.5)
             
         finally:
             # Cleanup

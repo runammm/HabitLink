@@ -3,14 +3,15 @@ import time
 import asyncio
 import threading
 from queue import Queue, Empty
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import concurrent.futures
 import traceback
+import numpy as np
 
 from .audio_engine import AudioEngine
-from .stt import GoogleSTTDiarizer
+from .stt import GoogleSTTStreaming
 from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
 from .text_analyzer import TextAnalyzer
@@ -20,13 +21,13 @@ from .utils import load_profanity_list
 
 class HabitLinkSession:
     """
-    Main class for managing a HabitLink analysis session with multi-threaded architecture.
+    Main class for managing a HabitLink analysis session with streaming architecture.
     """
     
     def __init__(self):
         """Initialize the HabitLink session with default settings."""
         self.audio_engine = None
-        self.diarizer = None
+        self.streaming_stt = None
         self.word_analyzer = None
         self.speech_rate_analyzer = None
         self.text_analyzer = None
@@ -46,26 +47,36 @@ class HabitLinkSession:
         self.target_wpm = None
         
         # Threading components
-        self.task_queue = Queue()
         self.feedback_queue = Queue()
+        self.ui_feedback_queue = Queue()  # For UI visualizer
+        self.audio_queue = Queue()  # For UI audio visualization
         self.stop_event = threading.Event()
         self.results_store = []
         
-        # Audio recording settings
-        self.chunk_duration = 10.0  # 10 seconds per chunk
+        # Streaming buffers
+        self.transcript_buffer = []  # Buffer for recent transcripts
+        self.audio_buffer = deque(maxlen=16000 * 30)  # 30 seconds of audio at 16kHz
+        self.last_analysis_time = time.time()
+        
+        # Store analysis results for summary
+        self.all_keyword_detections = []
+        self.all_profanity_detections = []
+        self.all_speech_rate_results = []
+        self.all_grammar_errors = []
+        self.all_context_errors = []
+        self.stutter_results = None
+        
+        # Track processed transcripts to avoid duplicates
+        self.processed_transcript_ids = set()
         
     def initialize_components(self):
         """Initialize all analysis components."""
         print("\n🚀 Initializing HabitLink components...")
         
         try:
-            # Initialize audio engine
+            # Initialize audio engine (still used for calibration)
             self.audio_engine = AudioEngine(samplerate=16000, channels=1)
             print("✅ Audio engine initialized")
-            
-            # Initialize STT with Google Cloud
-            self.diarizer = GoogleSTTDiarizer()
-            print("✅ Google Cloud STT initialized")
             
             # Initialize analyzers
             self.word_analyzer = WordAnalyzer()
@@ -157,13 +168,16 @@ class HabitLinkSession:
             input("준비가 되셨으면 Enter 키를 누르고 위 문장을 읽기 시작하세요...")
             
             try:
-                # Record calibration audio
-                calibration_duration = 15.0  # 15 seconds for calibration
+                # Record calibration audio using audio engine
+                calibration_duration = 15.0
                 calibration_path = self.audio_engine.record(calibration_duration, "calibration_temp.wav")
                 
-                # Process with STT
+                # For calibration, use the old batch processing
+                from .stt import GoogleSTTDiarizer
+                temp_diarizer = GoogleSTTDiarizer()
+                
                 print("발화 속도를 분석 중...")
-                calibration_transcript = self.diarizer.process(calibration_path)
+                calibration_transcript = temp_diarizer.process(calibration_path)
                 
                 if calibration_transcript:
                     # Analyze speech rate
@@ -197,244 +211,262 @@ class HabitLinkSession:
         
         print("\n✅ 세션 준비 완료!")
     
-    def audio_producer(self):
-        """Audio producer thread: records audio chunks and adds them to the queue."""
-        print("🎤 Audio producer started. Recording...")
-        chunk_counter = 0
-        
-        while not self.stop_event.is_set():
-            try:
-                chunk_counter += 1
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                audio_path = f"temp_chunk_{timestamp}_{chunk_counter}.wav"
-                
-                # Record audio chunk
-                self.audio_engine.record(self.chunk_duration, audio_path)
-                
-                # Add to processing queue
-                self.task_queue.put({
-                    "audio_path": audio_path,
-                    "chunk_id": chunk_counter,
-                    "timestamp": time.time()
-                })
-                
-            except Exception as e:
-                if not self.stop_event.is_set():
-                    print(f"❌ Error in audio producer: {e}")
-        
-        print("🎤 Audio producer stopping.")
-    
-    def analysis_consumer(self):
-        """Analysis consumer thread: processes audio from the queue."""
-        print("📊 Analysis consumer started.")
-        
-        # Create event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        while not self.stop_event.is_set() or not self.task_queue.empty():
-            try:
-                # Get task from queue with timeout
-                task = self.task_queue.get(timeout=1)
-                audio_path = task["audio_path"]
-                chunk_id = task["chunk_id"]
-                
-                # Process the audio chunk
-                results = loop.run_until_complete(self._process_audio_chunk(audio_path, chunk_id))
-                
-                # Store results
-                if results:
-                    self.results_store.append(results)
-                
-                # Clean up audio file
-                if os.path.exists(audio_path):
-                    os.remove(audio_path)
-                
-                self.task_queue.task_done()
-                
-            except Empty:
-                continue
-            except Exception as e:
-                if not self.stop_event.is_set():
-                    print(f"❌ Error in analysis consumer: {e}")
-                    traceback.print_exc()
-        
-        loop.close()
-        print("📊 Analysis consumer stopping.")
-    
-    async def _process_audio_chunk(self, audio_path: str, chunk_id: int) -> Optional[Dict[str, Any]]:
-        """Process a single audio chunk through the analysis pipeline."""
-        try:
-            # Step 1: Diarization
-            diarized_transcript = self.diarizer.process(audio_path)
-            
-            if not diarized_transcript:
-                return None
-            
-            # Step 2: Run enabled analyses
-            results = {
-                "chunk_id": chunk_id,
-                "timestamp": time.time(),
-                "transcript": diarized_transcript,
-                "detected_keywords": [],
-                "detected_profanity": [],
-                "speech_rate_analysis": [],
-                "grammar_analysis": [],
-                "context_analysis": [],
-                "stutter_analysis": None
-            }
-            
-            # Prepare concurrent tasks
-            loop = asyncio.get_running_loop()
-            tasks = []
-            
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                # Keyword detection (fast, local)
-                if self.enabled_analyses["keyword_detection"] and self.custom_keywords:
-                    keyword_task = loop.run_in_executor(
-                        pool, self.word_analyzer.analyze, diarized_transcript, self.custom_keywords
-                    )
-                    tasks.append(("keywords", keyword_task))
-                
-                # Profanity detection (fast, local)
-                if self.enabled_analyses["profanity_detection"]:
-                    profanity_task = loop.run_in_executor(
-                        pool, self.word_analyzer.analyze, diarized_transcript, self.profanity_list
-                    )
-                    tasks.append(("profanity", profanity_task))
-                
-                # Speech rate analysis (fast, local)
-                if self.enabled_analyses["speech_rate"]:
-                    speech_rate_task = loop.run_in_executor(
-                        pool, self.speech_rate_analyzer.analyze, diarized_transcript
-                    )
-                    tasks.append(("speech_rate", speech_rate_task))
-                
-                # LLM-based analysis (slow, network-bound) - runs asynchronously
-                if self.enabled_analyses["grammar"] or self.enabled_analyses["context"]:
-                    llm_task = self.text_analyzer.analyze(diarized_transcript)
-                    tasks.append(("llm", llm_task))
-                
-                # Stutter analysis (medium speed, audio + text hybrid)
-                if self.enabled_analyses["stutter"]:
-                    stutter_task = loop.run_in_executor(
-                        pool, self.stutter_analyzer.analyze, audio_path, diarized_transcript
-                    )
-                    tasks.append(("stutter", stutter_task))
-                
-                # Wait for all tasks to complete
-                for task_name, task in tasks:
-                    try:
-                        result = await task
-                        
-                        if task_name == "keywords":
-                            results["detected_keywords"] = result
-                            # Real-time feedback for keywords
-                            self._send_keyword_feedback(result, chunk_id)
-                        
-                        elif task_name == "profanity":
-                            results["detected_profanity"] = result
-                            # Real-time feedback for profanity
-                            self._send_profanity_feedback(result, chunk_id)
-                        
-                        elif task_name == "speech_rate":
-                            results["speech_rate_analysis"] = result
-                            # Real-time feedback for speech rate
-                            self._send_speech_rate_feedback(result, chunk_id)
-                        
-                        elif task_name == "llm":
-                            results["grammar_analysis"] = result.get("grammar_errors", [])
-                            results["context_analysis"] = result.get("context_errors", [])
-                            # LLM results are primarily for the final report
-                        
-                        elif task_name == "stutter":
-                            results["stutter_analysis"] = result
-                            # Stutter analysis feedback (sensitive - minimal real-time feedback)
-                            self._send_stutter_feedback(result, chunk_id)
-                    
-                    except Exception as e:
-                        print(f"⚠️ Error in {task_name} analysis: {e}")
-            
-            return results
-            
-        except Exception as e:
-            print(f"❌ Error processing audio chunk {chunk_id}: {e}")
-            return None
-    
-    def _send_keyword_feedback(self, detected_keywords: List[Dict], chunk_id: int):
-        """Send real-time feedback for detected keywords."""
-        if detected_keywords:
-            for item in detected_keywords:
-                keyword = item.get("keyword")
-                timestamp = item.get("timestamp", 0)
-                speaker = item.get("speaker", "UNKNOWN")
-                self.feedback_queue.put(
-                    f"[청크 {chunk_id}] 🔍 키워드 검출: '{keyword}' ({speaker}, {timestamp:.2f}s)"
-                )
-    
-    def _send_profanity_feedback(self, detected_profanity: List[Dict], chunk_id: int):
-        """Send real-time feedback for detected profanity."""
-        if detected_profanity:
-            for item in detected_profanity:
-                profanity = item.get("keyword")
-                timestamp = item.get("timestamp", 0)
-                speaker = item.get("speaker", "UNKNOWN")
-                self.feedback_queue.put(
-                    f"[청크 {chunk_id}] ⚠️ 비속어 검출: '{profanity}' ({speaker}, {timestamp:.2f}s)"
-                )
-    
-    def _send_speech_rate_feedback(self, speech_rate_analysis: List[Dict], chunk_id: int):
-        """Send real-time feedback for speech rate analysis."""
-        if speech_rate_analysis and self.target_wpm:
-            for segment in speech_rate_analysis:
-                comparison = segment.get("comparison")
-                if comparison == "too_fast":
-                    wpm = segment.get("wpm", 0)
-                    speaker = segment.get("speaker", "UNKNOWN")
-                    self.feedback_queue.put(
-                        f"[청크 {chunk_id}] 🏃 발화 속도가 빠릅니다: {wpm:.0f} WPM ({speaker})"
-                    )
-                elif comparison == "too_slow":
-                    wpm = segment.get("wpm", 0)
-                    speaker = segment.get("speaker", "UNKNOWN")
-                    self.feedback_queue.put(
-                        f"[청크 {chunk_id}] 🐢 발화 속도가 느립니다: {wpm:.0f} WPM ({speaker})"
-                    )
-    
-    def _send_stutter_feedback(self, stutter_analysis: Dict[str, Any], chunk_id: int):
+    def stt_callback(self, transcript: str, is_final: bool, speaker: str):
         """
-        Send minimal, sensitive real-time feedback for stutter detection.
-        Following best practices: avoid punitive real-time feedback.
+        Callback function for streaming STT results.
+        
+        Args:
+            transcript: The transcribed text
+            is_final: Whether this is a final result
+            speaker: Speaker label
         """
-        if not stutter_analysis:
+        if not transcript:
             return
         
-        stats = stutter_analysis.get("statistics", {})
-        total_events = stats.get("total_events", 0)
+        # Add to buffer
+        timestamp = time.time()
         
-        # Only provide gentle, positive feedback if events are detected
-        # Focus on encouragement rather than criticism
-        if total_events > 0:
-            fluency = stats.get("fluency_percentage", 0)
-            # No negative real-time alerts - save details for post-session report
-            # Users can review the summary report for detailed analysis
+        if is_final:
+            # Create unique ID for this transcript to prevent duplicates
+            transcript_id = f"{timestamp}_{transcript[:50]}"
+            
+            # Check if already processed
+            if transcript_id in self.processed_transcript_ids:
+                return  # Skip duplicate
+            
+            # Mark as processed
+            self.processed_transcript_ids.add(transcript_id)
+            
+            # Store final transcript
+            transcript_item = {
+                "text": transcript,
+                "timestamp": timestamp,
+                "speaker": speaker,
+                "is_final": True,
+                "id": transcript_id
+            }
+            self.transcript_buffer.append(transcript_item)
+            
+            # Print to console immediately
+            print(f"\n✅ 인식: {transcript}")
+            
+            # Trigger analysis immediately (don't wait for 2 seconds)
+            # Run in a new thread to avoid blocking STT callback
+            analysis_thread = threading.Thread(
+                target=self._run_analysis_sync,
+                args=(transcript_item,),
+                daemon=True
+            )
+            analysis_thread.start()
     
-    def feedback_loop(self):
-        """Main thread feedback loop: prints real-time feedback to the console."""
+    def _run_analysis_sync(self, transcript_item: Dict):
+        """Run analysis synchronously in a separate thread."""
+        # Create a new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._analyze_single_transcript(transcript_item))
+        finally:
+            loop.close()
+    
+    async def _analyze_single_transcript(self, transcript_item: Dict):
+        """Analyze a single transcript immediately."""
+        # Convert to segment format
+        segment = {
+            "text": transcript_item["text"],
+            "speaker": transcript_item["speaker"],
+            "start": transcript_item["timestamp"],
+            "end": transcript_item["timestamp"] + 1.0,
+        }
+        
+        loop = asyncio.get_running_loop()
+        
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            tasks = []
+            
+            # Keyword detection (fast)
+            if self.enabled_analyses["keyword_detection"] and self.custom_keywords:
+                keyword_task = loop.run_in_executor(
+                    pool, self.word_analyzer.analyze, [segment], self.custom_keywords
+                )
+                tasks.append(("keywords", keyword_task))
+            
+            # Profanity detection (fast)
+            if self.enabled_analyses["profanity_detection"]:
+                profanity_task = loop.run_in_executor(
+                    pool, self.word_analyzer.analyze, [segment], self.profanity_list
+                )
+                tasks.append(("profanity", profanity_task))
+            
+            # Speech rate (fast)
+            if self.enabled_analyses["speech_rate"]:
+                speech_rate_task = loop.run_in_executor(
+                    pool, self.speech_rate_analyzer.analyze, [segment]
+                )
+                tasks.append(("speech_rate", speech_rate_task))
+            
+            # Wait for fast analyses
+            for task_name, task in tasks:
+                try:
+                    result = await task
+                    
+                    if task_name == "keywords" and result:
+                        for item in result:
+                            msg = f"키워드 검출: '{item['keyword']}'"
+                            print(f"🔔 {msg}")
+                            self.feedback_queue.put(msg)
+                            self.ui_feedback_queue.put({"message": msg, "type": "keyword"})
+                            # Store for summary
+                            self.all_keyword_detections.append(item)
+                    
+                    elif task_name == "profanity" and result:
+                        for item in result:
+                            msg = f"비속어 검출: '{item['keyword']}'"
+                            print(f"🔔 {msg}")
+                            self.feedback_queue.put(msg)
+                            self.ui_feedback_queue.put({"message": msg, "type": "profanity"})
+                            # Store for summary
+                            self.all_profanity_detections.append(item)
+                    
+                    elif task_name == "speech_rate" and result:
+                        self.all_speech_rate_results.extend(result)
+                        for seg in result:
+                            comparison = seg.get("comparison")
+                            if comparison == "too_fast":
+                                msg = f"발화 속도가 빠릅니다: {seg.get('wpm', 0):.0f} WPM"
+                                print(f"🔔 {msg}")
+                                self.feedback_queue.put(msg)
+                                self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
+                            elif comparison == "too_slow":
+                                msg = f"발화 속도가 느립니다: {seg.get('wpm', 0):.0f} WPM"
+                                print(f"🔔 {msg}")
+                                self.feedback_queue.put(msg)
+                                self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
+                
+                except Exception as e:
+                    print(f"⚠️ Error in {task_name} analysis: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        # Slow analyses (grammar, context) - run periodically
+        current_time = time.time()
+        if current_time - self.last_analysis_time > 10.0:
+            await self._run_slow_analysis()
+            self.last_analysis_time = current_time
+    
+    async def _run_slow_analysis(self):
+        """Run slow analyses (grammar, context)."""
+        if not self.transcript_buffer:
+            return
+        
+        # Convert buffer to segment format
+        segments = []
+        for item in self.transcript_buffer:
+            segments.append({
+                "text": item["text"],
+                "speaker": item["speaker"],
+                "start": item["timestamp"],
+                "end": item["timestamp"] + 1.0,
+            })
+        
+        # Run LLM analysis
+        if self.enabled_analyses["grammar"] or self.enabled_analyses["context"]:
+            try:
+                llm_results = await self.text_analyzer.analyze(segments)
+                
+                if self.enabled_analyses["grammar"]:
+                    grammar_errors = llm_results.get("grammar_errors", [])
+                    self.all_grammar_errors.extend(grammar_errors)  # Store for summary
+                    if grammar_errors:
+                        msg = f"문법 오류 {len(grammar_errors)}개 발견"
+                        self.feedback_queue.put(msg)
+                        self.ui_feedback_queue.put({"message": msg, "type": "grammar"})
+                
+                if self.enabled_analyses["context"]:
+                    context_errors = llm_results.get("context_errors", [])
+                    self.all_context_errors.extend(context_errors)  # Store for summary
+                    if context_errors:
+                        msg = f"맥락 오류 {len(context_errors)}개 발견"
+                        self.feedback_queue.put(msg)
+                        self.ui_feedback_queue.put({"message": msg, "type": "context"})
+            
+            except Exception as e:
+                print(f"⚠️ Error in LLM analysis: {e}")
+    
+    def audio_callback(self, audio_chunk: bytes):
+        """
+        Callback to receive audio chunks from the streaming STT.
+        
+        Args:
+            audio_chunk: Raw audio bytes
+        """
+        try:
+            # Send to UI queue for visualization
+            self.audio_queue.put(audio_chunk)
+            
+            # Add to buffer for stutter analysis
+            audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
+            self.audio_buffer.extend(audio_array)
+        except Exception as e:
+            pass  # Silently ignore errors in callback
+    
+    def streaming_producer(self):
+        """Streaming producer: captures audio and sends to GCP STT."""
+        print("🎤 Streaming producer started")
+        
+        try:
+            # Initialize streaming STT with callbacks
+            self.streaming_stt = GoogleSTTStreaming(
+                callback=self.stt_callback,
+                audio_callback=self.audio_callback
+            )
+            
+            # Start streaming (blocking, includes audio capture)
+            self.streaming_stt.start_streaming()
+            
+        except Exception as e:
+            print(f"❌ Error in streaming producer: {e}")
+            traceback.print_exc()
+        finally:
+            print("🎤 Streaming producer stopped")
+    
+    def console_feedback_loop(self):
+        """Console feedback loop in a separate thread."""
         print("\n" + "="*60)
         print("🎙️ 세션 시작")
         print("="*60)
         print("실시간 피드백이 아래에 표시됩니다.")
-        print("세션을 종료하려면 Ctrl+C를 누르세요.")
+        print("세션을 종료하려면 UI 창을 닫거나 Ctrl+C를 누르세요.")
         print("="*60 + "\n")
         
         while not self.stop_event.is_set():
             try:
                 # Get feedback from queue with timeout
                 feedback = self.feedback_queue.get(timeout=0.1)
-                print(feedback)
+                print(f"🔔 {feedback}")
             except Empty:
                 continue
+    
+    def run_ui_main_thread(self):
+        """Run the pygame UI visualizer in the MAIN thread (required for macOS)."""
+        try:
+            from .ui_visualizer import VoiceVisualizer
+            
+            print("🎨 Starting UI visualizer...")
+            visualizer = VoiceVisualizer(self.audio_queue, self.ui_feedback_queue)
+            visualizer.run()
+            
+            # When UI closes, stop the session
+            if not self.stop_event.is_set():
+                print("\n⏸️ UI closed. Stopping session...")
+                self.stop_event.set()
+                if self.streaming_stt:
+                    self.streaming_stt.stop_streaming()
+        
+        except Exception as e:
+            print(f"❌ Error in UI: {e}")
+            traceback.print_exc()
+            self.stop_event.set()
     
     def generate_summary_report(self):
         """Generate and print a comprehensive summary report after the session ends."""
@@ -442,37 +474,27 @@ class HabitLinkSession:
         print("📋 세션 요약 리포트")
         print("="*60)
         
-        if not self.results_store:
+        if not self.transcript_buffer:
             print("\n분석할 데이터가 없습니다.")
             return
         
-        # Aggregate all transcripts
+        # Show all transcripts
         print("\n--- ✅ 전체 대화 내용 ---")
-        for result in self.results_store:
-            chunk_id = result.get("chunk_id")
-            transcript = result.get("transcript", [])
-            if transcript:
-                print(f"\n[청크 {chunk_id}]")
-                for segment in transcript:
-                    speaker = segment.get("speaker", "UNKNOWN")
-                    start = segment.get("start", 0)
-                    end = segment.get("end", 0)
-                    text = segment.get("text", "")
-                    print(f"  [{start:.2f}s - {end:.2f}s] {speaker}: {text}")
+        for item in self.transcript_buffer:
+            speaker = item.get("speaker", "UNKNOWN")
+            text = item.get("text", "")
+            timestamp = item.get("timestamp", 0)
+            print(f"[{timestamp:.2f}s] {speaker}: {text}")
         
         # Keyword detection summary
         if self.enabled_analyses["keyword_detection"]:
             print("\n--- 🔍 키워드 검출 요약 ---")
-            all_keywords = []
-            for result in self.results_store:
-                all_keywords.extend(result.get("detected_keywords", []))
-            
-            if all_keywords:
+            if self.all_keyword_detections:
                 keyword_counts = defaultdict(int)
-                for item in all_keywords:
+                for item in self.all_keyword_detections:
                     keyword_counts[item["keyword"].lower()] += 1
                 
-                print(f"총 {len(all_keywords)}회 검출:")
+                print(f"총 {len(self.all_keyword_detections)}회 검출:")
                 for keyword, count in sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True):
                     print(f"  - '{keyword}': {count}회")
             else:
@@ -481,31 +503,23 @@ class HabitLinkSession:
         # Profanity detection summary
         if self.enabled_analyses["profanity_detection"]:
             print("\n--- ⚠️ 비속어 검출 요약 ---")
-            all_profanity = []
-            for result in self.results_store:
-                all_profanity.extend(result.get("detected_profanity", []))
-            
-            if all_profanity:
+            if self.all_profanity_detections:
                 profanity_counts = defaultdict(int)
-                for item in all_profanity:
+                for item in self.all_profanity_detections:
                     profanity_counts[item["keyword"].lower()] += 1
                 
-                print(f"총 {len(all_profanity)}회 검출:")
+                print(f"총 {len(self.all_profanity_detections)}회 검출:")
                 for profanity, count in sorted(profanity_counts.items(), key=lambda x: x[1], reverse=True):
                     print(f"  - '{profanity}': {count}회")
             else:
                 print("검출된 비속어가 없습니다.")
         
-        # Speech rate analysis summary
+        # Speech rate summary
         if self.enabled_analyses["speech_rate"]:
             print("\n--- 🏃 발화 속도 분석 요약 ---")
-            all_speech_rate = []
-            for result in self.results_store:
-                all_speech_rate.extend(result.get("speech_rate_analysis", []))
-            
-            if all_speech_rate:
-                total_word_count = sum(seg.get("word_count", 0) for seg in all_speech_rate)
-                total_duration = sum(seg.get("duration", 0) for seg in all_speech_rate)
+            if self.all_speech_rate_results:
+                total_word_count = sum(seg.get("word_count", 0) for seg in self.all_speech_rate_results)
+                total_duration = sum(seg.get("duration", 0) for seg in self.all_speech_rate_results)
                 
                 if total_duration > 0:
                     overall_wpm = (total_word_count / total_duration) * 60
@@ -514,127 +528,132 @@ class HabitLinkSession:
                     if self.target_wpm:
                         print(f"목표 발화 속도: {self.target_wpm:.2f} WPM")
                         
-                        # Count too_fast and too_slow instances
-                        too_fast = sum(1 for seg in all_speech_rate if seg.get("comparison") == "too_fast")
-                        too_slow = sum(1 for seg in all_speech_rate if seg.get("comparison") == "too_slow")
-                        good = sum(1 for seg in all_speech_rate if seg.get("comparison") == "good")
+                        too_fast = sum(1 for seg in self.all_speech_rate_results if seg.get("comparison") == "too_fast")
+                        too_slow = sum(1 for seg in self.all_speech_rate_results if seg.get("comparison") == "too_slow")
+                        good = sum(1 for seg in self.all_speech_rate_results if seg.get("comparison") == "good")
                         
                         print(f"\n발화 속도 분포:")
                         print(f"  - 적절: {good}회")
                         print(f"  - 너무 빠름: {too_fast}회")
                         print(f"  - 너무 느림: {too_slow}회")
-                    
-                    # Speaker breakdown
-                    speaker_stats = defaultdict(lambda: {"word_count": 0, "duration": 0})
-                    for seg in all_speech_rate:
-                        speaker = seg.get("speaker", "UNKNOWN")
-                        speaker_stats[speaker]["word_count"] += seg.get("word_count", 0)
-                        speaker_stats[speaker]["duration"] += seg.get("duration", 0)
-                    
-                    print("\n화자별 발화 속도:")
-                    for speaker, stats in speaker_stats.items():
-                        if stats["duration"] > 0:
-                            speaker_wpm = (stats["word_count"] / stats["duration"]) * 60
-                            print(f"  - {speaker}: {speaker_wpm:.2f} WPM")
             else:
                 print("발화 속도 분석 결과가 없습니다.")
         
         # Grammar analysis summary
         if self.enabled_analyses["grammar"]:
             print("\n--- 🧐 문법 분석 요약 ---")
-            all_grammar_errors = []
-            for result in self.results_store:
-                all_grammar_errors.extend(result.get("grammar_analysis", []))
-            
-            if all_grammar_errors:
-                print(f"총 {len(all_grammar_errors)}개의 문법 오류 발견:")
-                for i, error in enumerate(all_grammar_errors[:10], 1):  # Show first 10
+            if self.all_grammar_errors:
+                print(f"총 {len(self.all_grammar_errors)}개의 문법 오류 발견:")
+                for i, error in enumerate(self.all_grammar_errors[:10], 1):  # Show first 10
                     details = error.get("error_details", {})
                     print(f"\n  {i}. [{error.get('speaker')}] '{details.get('original')}' → '{details.get('corrected')}'")
                     print(f"     설명: {details.get('explanation')}")
                 
-                if len(all_grammar_errors) > 10:
-                    print(f"\n  ... 그 외 {len(all_grammar_errors) - 10}개 더")
+                if len(self.all_grammar_errors) > 10:
+                    print(f"\n  ... 그 외 {len(self.all_grammar_errors) - 10}개 더")
             else:
                 print("문법 오류가 발견되지 않았습니다.")
         
         # Context analysis summary
         if self.enabled_analyses["context"]:
             print("\n--- 🧠 맥락 분석 요약 ---")
-            all_context_errors = []
-            for result in self.results_store:
-                all_context_errors.extend(result.get("context_analysis", []))
-            
-            if all_context_errors:
-                print(f"총 {len(all_context_errors)}개의 맥락 오류 발견:")
-                for i, error in enumerate(all_context_errors[:5], 1):  # Show first 5
+            if self.all_context_errors:
+                print(f"총 {len(self.all_context_errors)}개의 맥락 오류 발견:")
+                for i, error in enumerate(self.all_context_errors[:5], 1):  # Show first 5
                     print(f"\n  {i}. [{error.get('speaker')}] \"{error.get('utterance')}\"")
                     print(f"     분석: {error.get('reasoning')}")
                 
-                if len(all_context_errors) > 5:
-                    print(f"\n  ... 그 외 {len(all_context_errors) - 5}개 더")
+                if len(self.all_context_errors) > 5:
+                    print(f"\n  ... 그 외 {len(self.all_context_errors) - 5}개 더")
             else:
                 print("맥락 오류가 발견되지 않았습니다.")
         
-        # Stutter analysis summary (sensitive - positive framing)
+        # Stutter analysis summary
         if self.enabled_analyses["stutter"]:
             print("\n--- 🗣️ 말더듬 분석 요약 ---")
             
-            # Aggregate all stutter analyses
-            all_repetitions = []
-            all_prolongations = []
-            all_blocks = []
-            total_fluency = []
-            
-            for result in self.results_store:
-                stutter_data = result.get("stutter_analysis")
-                if stutter_data:
-                    all_repetitions.extend(stutter_data.get("repetitions", []))
-                    all_prolongations.extend(stutter_data.get("prolongations", []))
-                    all_blocks.extend(stutter_data.get("blocks", []))
-                    stats = stutter_data.get("statistics", {})
-                    if stats.get("fluency_percentage", 0) > 0:
-                        total_fluency.append(stats.get("fluency_percentage", 0))
-            
-            if total_fluency:
-                avg_fluency = sum(total_fluency) / len(total_fluency)
-                print(f"전체 유창성 점수: {avg_fluency:.1f}%")
-                
-                total_events = len(all_repetitions) + len(all_prolongations) + len(all_blocks)
-                print(f"총 {total_events}개의 말더듬 이벤트 검출")
-                
-                # Show breakdown by type
-                print(f"\n이벤트 유형별:")
-                print(f"  - 반복 (Repetitions): {len(all_repetitions)}회")
-                print(f"  - 연장 (Prolongations): {len(all_prolongations)}회")
-                print(f"  - 막힘 (Blocks): {len(all_blocks)}회")
-                
-                # Show examples (limited for sensitivity)
-                if all_repetitions:
-                    print(f"\n예시 - 반복:")
-                    for rep in all_repetitions[:2]:
-                        print(f"  - [{rep.get('timestamp', 0):.1f}s] '{rep.get('full_match')}'")
-                
-                if all_prolongations:
-                    print(f"\n예시 - 연장:")
-                    for prol in all_prolongations[:2]:
-                        print(f"  - [{prol.get('timestamp', 0):.1f}s] '{prol.get('word')}' ({prol.get('duration')}초)")
-                
-                if all_blocks:
-                    print(f"\n예시 - 막힘:")
-                    for block in all_blocks[:2]:
-                        print(f"  - [{block.get('timestamp', 0):.1f}s] {block.get('duration')}초 침묵")
-                
-                # Positive closing message
-                print(f"\n💡 유창성 {avg_fluency:.0f}%로 좋은 발화를 보여주셨습니다!")
+            # Run stutter analysis if enabled and we have audio buffer
+            if len(self.audio_buffer) > 0:
+                try:
+                    # Save audio buffer to temporary file
+                    import tempfile
+                    import soundfile as sf
+                    
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                        temp_audio_path = temp_audio.name
+                        # Convert deque to numpy array
+                        audio_array = np.array(list(self.audio_buffer), dtype=np.int16)
+                        # Save as WAV file
+                        sf.write(temp_audio_path, audio_array, 16000)
+                        
+                        print("말더듬 분석 중...")
+                        
+                        # Convert transcript buffer to segment format
+                        segments = []
+                        for item in self.transcript_buffer:
+                            segments.append({
+                                "text": item["text"],
+                                "speaker": item["speaker"],
+                                "start": item["timestamp"],
+                                "end": item["timestamp"] + 2.0,  # Estimate
+                            })
+                        
+                        # Run stutter analysis
+                        self.stutter_results = self.stutter_analyzer.analyze(temp_audio_path, segments)
+                        
+                        # Display formatted summary
+                        if self.stutter_results:
+                            stats = self.stutter_results.get("statistics", {})
+                            repetitions = self.stutter_results.get("repetitions", [])
+                            prolongations = self.stutter_results.get("prolongations", [])
+                            blocks = self.stutter_results.get("blocks", [])
+                            
+                            fluency = stats.get("fluency_percentage", 0)
+                            total_events = stats.get("total_events", 0)
+                            
+                            print(f"\n유창성 점수: {fluency:.1f}%")
+                            print(f"총 {total_events}개의 말더듬 이벤트 검출")
+                            
+                            if repetitions:
+                                print(f"\n🔁 반복 (Repetitions): {len(repetitions)}회")
+                                for rep in repetitions[:3]:
+                                    print(f"  - [{rep.get('timestamp', 0):.1f}s] '{rep.get('full_match')}'")
+                                if len(repetitions) > 3:
+                                    print(f"  ... 그 외 {len(repetitions) - 3}회 더")
+                            
+                            if prolongations:
+                                print(f"\n⏱️ 연장 (Prolongations): {len(prolongations)}회")
+                                for prol in prolongations[:3]:
+                                    print(f"  - [{prol.get('timestamp', 0):.1f}s] '{prol.get('word')}' ({prol.get('duration')}초)")
+                                if len(prolongations) > 3:
+                                    print(f"  ... 그 외 {len(prolongations) - 3}회 더")
+                            
+                            if blocks:
+                                print(f"\n🚫 막힘 (Blocks): {len(blocks)}회")
+                                for block in blocks[:3]:
+                                    print(f"  - [{block.get('timestamp', 0):.1f}s] {block.get('duration')}초 침묵")
+                                if len(blocks) > 3:
+                                    print(f"  ... 그 외 {len(blocks) - 3}회 더")
+                            
+                            if total_events == 0:
+                                print("\n✅ 말더듬 이벤트가 감지되지 않았습니다. 유창한 발화입니다!")
+                        
+                        # Clean up temp file
+                        import os
+                        os.remove(temp_audio_path)
+                        
+                except Exception as e:
+                    print(f"❌ 말더듬 분석 중 오류 발생: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
-                print("말더듬 이벤트가 감지되지 않았습니다. 유창한 발화입니다! 👍")
+                print("분석할 오디오 데이터가 없습니다.")
         
         print("\n" + "="*60)
         print("세션 종료")
         print("="*60)
     
-    def run(self):
+    def run(self, enable_ui: bool = True):
         """Run the main HabitLink session."""
         # Initialize components
         if not self.initialize_components():
@@ -652,25 +671,35 @@ class HabitLinkSession:
         # Prepare session
         self.prepare_session()
         
-        # Start threads
-        producer_thread = threading.Thread(target=self.audio_producer, daemon=True)
-        consumer_thread = threading.Thread(target=self.analysis_consumer, daemon=True)
+        # Start streaming thread
+        streaming_thread = threading.Thread(target=self.streaming_producer, daemon=True)
+        streaming_thread.start()
         
-        producer_thread.start()
-        consumer_thread.start()
+        # Start console feedback thread
+        console_thread = threading.Thread(target=self.console_feedback_loop, daemon=True)
+        console_thread.start()
         
         try:
-            # Main feedback loop
-            self.feedback_loop()
+            if enable_ui:
+                # Run UI in MAIN thread (required for macOS)
+                self.run_ui_main_thread()
+            else:
+                # Console-only mode: wait for keyboard interrupt
+                print("\n콘솔 모드로 실행 중...")
+                print("종료하려면 Ctrl+C를 누르세요.\n")
+                while not self.stop_event.is_set():
+                    time.sleep(0.1)
+        
         except KeyboardInterrupt:
             print("\n\n⏸️ 세션을 종료하는 중...")
             self.stop_event.set()
+            if self.streaming_stt:
+                self.streaming_stt.stop_streaming()
         
         # Wait for threads to finish
         print("마지막 분석을 완료하는 중...")
-        producer_thread.join(timeout=2)
-        consumer_thread.join(timeout=10)
+        streaming_thread.join(timeout=5)
+        console_thread.join(timeout=2)
         
         # Generate summary report
         self.generate_summary_report()
-

@@ -56,9 +56,20 @@ def main():
     # Print welcome message
     print_welcome()
     
+    # Ask about UI visualization
+    print("\n실시간 음성 시각화 UI를 활성화하시겠습니까?")
+    print("(3D 구와 파형을 표시하는 pygame 창이 열립니다)")
+    ui_choice = input("UI 활성화 (Y/n): ").strip().lower()
+    enable_ui = ui_choice != 'n'
+    
+    if enable_ui:
+        print("✅ UI 시각화가 활성화됩니다.")
+    else:
+        print("ℹ️  콘솔 모드로 실행됩니다.")
+    
     # Create and run session
     session = HabitLinkSession()
-    session.run()
+    session.run(enable_ui=enable_ui)
     
     # Goodbye message
     print("\n\n감사합니다. HabitLink를 사용해 주셔서 감사합니다! 👋")

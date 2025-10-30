@@ -18,7 +18,7 @@ class WordAnalyzer:
         Args:
             diarized_transcript (List[Dict[str, Any]]): 
                 The output from the SpeakerDiarizer, where each dict contains
-                'text', 'speaker', and a 'words' list with word-level timestamps.
+                'text', 'speaker', and optionally a 'words' list with word-level timestamps.
             keywords (List[str]): 
                 A list of keywords to search for (case-insensitive).
 
@@ -38,18 +38,39 @@ class WordAnalyzer:
             speaker = segment.get("speaker")
             words = segment.get("words", [])
 
-            if not words:
-                continue
-            
-            for word_info in words:
-                word = word_info.get("word", "").strip().lower()
+            # If word-level timestamps are available, use them
+            if words:
+                for word_info in words:
+                    word = word_info.get("word", "").strip().lower()
+                    
+                    # Direct matching is now possible since we iterate word by word.
+                    if word in search_keywords:
+                        found_keywords.append({
+                            "keyword": word_info.get("word"), # Store the original casing
+                            "speaker": speaker,
+                            "timestamp": word_info.get("start") # Use the word's precise start time
+                        })
+            else:
+                # Fallback: Parse the text directly if word-level timestamps are not available
+                text = segment.get("text", "")
+                timestamp = segment.get("start", 0)
                 
-                # Direct matching is now possible since we iterate word by word.
-                if word in search_keywords:
-                    found_keywords.append({
-                        "keyword": word_info.get("word"), # Store the original casing
-                        "speaker": speaker,
-                        "timestamp": word_info.get("start") # Use the word's precise start time
-                    })
+                # Split text into words and check each
+                text_words = re.findall(r'\b\w+\b', text.lower())
+                
+                for word in text_words:
+                    if word in search_keywords:
+                        # Find the original casing in the text
+                        original_match = None
+                        for kw in keywords:
+                            if kw.strip().lower() == word:
+                                original_match = kw.strip()
+                                break
+                        
+                        found_keywords.append({
+                            "keyword": original_match or word,
+                            "speaker": speaker,
+                            "timestamp": timestamp
+                        })
 
         return found_keywords
