@@ -22,3 +22,6 @@ librosa
 # Added for UI visualization and real-time audio streaming
 pygame
 pyaudio
+
+# Added for PDF report generation
+reportlab

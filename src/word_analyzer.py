@@ -55,20 +55,22 @@ class WordAnalyzer:
                 text = segment.get("text", "")
                 timestamp = segment.get("start", 0)
                 
-                # Split text into words and check each
-                text_words = re.findall(r'\b\w+\b', text.lower())
+                # Split text by whitespace and punctuation to extract words
+                # This handles Korean text better than \b\w+\b
+                text_words = re.split(r'[\s,.\?!;:]+', text)
                 
                 for word in text_words:
-                    if word in search_keywords:
+                    word_lower = word.strip().lower()
+                    if word_lower and word_lower in search_keywords:
                         # Find the original casing in the text
                         original_match = None
                         for kw in keywords:
-                            if kw.strip().lower() == word:
+                            if kw.strip().lower() == word_lower:
                                 original_match = kw.strip()
                                 break
                         
                         found_keywords.append({
-                            "keyword": original_match or word,
+                            "keyword": original_match or word.strip(),
                             "speaker": speaker,
                             "timestamp": timestamp
                         })

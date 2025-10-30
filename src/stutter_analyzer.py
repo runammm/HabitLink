@@ -49,9 +49,17 @@ class StutterAnalyzer:
         """
         repetitions = []
         
-        # Pattern to find consecutive identical words (allowing for spacing variations)
-        # Matches: "나는 나는", "그 그", "이 이" etc.
-        pattern = re.compile(r'\b(\w+)\s+\1\b', re.UNICODE)
+        # Multiple patterns to catch different types of repetitions
+        patterns = [
+            # Pattern 1: Consecutive identical words with space: "나는 나는"
+            re.compile(r'\b(\w+)\s+\1\b', re.UNICODE),
+            # Pattern 2: Partial repetitions: "이 이제", "그 그니까" (1-2 characters repeated)
+            re.compile(r'\b(\w{1,2})\s+\1\w+', re.UNICODE),
+            # Pattern 3: Sound repetitions without space: "이-이제", "그-그니까"
+            re.compile(r'\b(\w{1,3})-\1', re.UNICODE),
+            # Pattern 4: Multiple consecutive same words: "음 음 음"
+            re.compile(r'\b(\w+)(\s+\1){2,}', re.UNICODE),
+        ]
         
         for segment in transcript:
             text = segment.get("text", "")
@@ -61,21 +69,61 @@ class StutterAnalyzer:
             if not text:
                 continue
             
-            # Find all repetitions in this segment
-            matches = list(pattern.finditer(text))
+            # Track found positions to avoid duplicates
+            found_positions = set()
             
-            for match in matches:
-                repeated_word = match.group(1)
+            # Try each pattern
+            for pattern_idx, pattern in enumerate(patterns):
+                matches = list(pattern.finditer(text))
                 
-                repetitions.append({
-                    "type": "repetition",
-                    "word": repeated_word,
-                    "full_match": match.group(0),
-                    "speaker": speaker,
-                    "timestamp": start_time,
-                    "context": text,
-                    "severity": "mild"  # Could be enhanced with count-based severity
-                })
+                for match in matches:
+                    # Skip if we already found something at this position
+                    match_pos = match.start()
+                    if match_pos in found_positions:
+                        continue
+                    
+                    found_positions.add(match_pos)
+                    repeated_word = match.group(1)
+                    
+                    # Determine repetition type
+                    if pattern_idx == 1:
+                        rep_type = "partial_repetition"
+                    elif pattern_idx == 2:
+                        rep_type = "sound_repetition"
+                    elif pattern_idx == 3:
+                        rep_type = "multiple_repetition"
+                    else:
+                        rep_type = "repetition"
+                    
+                    repetitions.append({
+                        "type": rep_type,
+                        "word": repeated_word,
+                        "full_match": match.group(0),
+                        "speaker": speaker,
+                        "timestamp": start_time,
+                        "context": text,
+                        "severity": "moderate" if pattern_idx in [1, 2] else "mild"
+                    })
+            
+            # Additional check: look for same consecutive words across the entire text
+            # Split by common separators and check for adjacent duplicates
+            words = re.split(r'[\s,.\?!]+', text.lower())
+            for i in range(len(words) - 1):
+                if words[i] and words[i] == words[i + 1] and len(words[i]) > 1:
+                    # Check if we haven't already caught this
+                    word_pattern = re.compile(rf'\b{re.escape(words[i])}\b.*?\b{re.escape(words[i])}\b', re.IGNORECASE)
+                    match = word_pattern.search(text)
+                    if match and match.start() not in found_positions:
+                        found_positions.add(match.start())
+                        repetitions.append({
+                            "type": "word_repetition",
+                            "word": words[i],
+                            "full_match": match.group(0),
+                            "speaker": speaker,
+                            "timestamp": start_time,
+                            "context": text,
+                            "severity": "mild"
+                        })
         
         return repetitions
     
@@ -284,10 +332,32 @@ class StutterAnalyzer:
         # Repetitions
         if repetitions:
             summary.append(f"🔁 반복 (Repetitions): {len(repetitions)}회")
-            for rep in repetitions[:3]:  # Show first 3
+            
+            # Count by type
+            type_counts = {}
+            for rep in repetitions:
+                rep_type = rep.get('type', 'repetition')
+                type_counts[rep_type] = type_counts.get(rep_type, 0) + 1
+            
+            # Show breakdown
+            type_names = {
+                'repetition': '단어 반복',
+                'partial_repetition': '부분 반복',
+                'sound_repetition': '음소 반복',
+                'multiple_repetition': '다중 반복',
+                'word_repetition': '연속 단어 반복'
+            }
+            
+            for rep_type, count in type_counts.items():
+                type_name = type_names.get(rep_type, rep_type)
+                summary.append(f"   • {type_name}: {count}회")
+            
+            # Show examples
+            summary.append("\n   예시:")
+            for rep in repetitions[:5]:  # Show first 5
                 summary.append(f"   - [{rep.get('timestamp', 0):.1f}s] {rep.get('speaker')}: '{rep.get('full_match')}'")
-            if len(repetitions) > 3:
-                summary.append(f"   ... 그 외 {len(repetitions) - 3}회 더")
+            if len(repetitions) > 5:
+                summary.append(f"   ... 그 외 {len(repetitions) - 5}회 더")
         else:
             summary.append("🔁 반복 (Repetitions): 없음")
         

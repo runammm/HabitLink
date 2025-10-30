@@ -58,7 +58,6 @@ def main():
     
     # Ask about UI visualization
     print("\n실시간 음성 시각화 UI를 활성화하시겠습니까?")
-    print("(3D 구와 파형을 표시하는 pygame 창이 열립니다)")
     ui_choice = input("UI 활성화 (Y/n): ").strip().lower()
     enable_ui = ui_choice != 'n'
     

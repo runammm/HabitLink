@@ -16,7 +16,9 @@ from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
 from .text_analyzer import TextAnalyzer
 from .stutter_analyzer import StutterAnalyzer
+from .stutter_detector import StutterDetector
 from .utils import load_profanity_list
+from .report_generator import ReportGenerator
 
 
 class HabitLinkSession:
@@ -32,6 +34,7 @@ class HabitLinkSession:
         self.speech_rate_analyzer = None
         self.text_analyzer = None
         self.stutter_analyzer = None
+        self.stutter_detector = None  # Real-time audio-based stutter detection
         self.profanity_list = []
         
         # User configuration
@@ -69,6 +72,13 @@ class HabitLinkSession:
         # Track processed transcripts to avoid duplicates
         self.processed_transcript_ids = set()
         
+        # Session metadata for report
+        self.session_start_time = None
+        self.session_end_time = None
+        
+        # Report generator
+        self.report_generator = ReportGenerator()
+        
     def initialize_components(self):
         """Initialize all analysis components."""
         print("\n🚀 Initializing HabitLink components...")
@@ -83,6 +93,7 @@ class HabitLinkSession:
             self.speech_rate_analyzer = SpeechRateAnalyzer()
             self.text_analyzer = TextAnalyzer()
             self.stutter_analyzer = StutterAnalyzer()
+            self.stutter_detector = StutterDetector()
             print("✅ Analysis modules initialized")
             
             # Load profanity list
@@ -271,12 +282,19 @@ class HabitLinkSession:
     
     async def _analyze_single_transcript(self, transcript_item: Dict):
         """Analyze a single transcript immediately."""
+        # Estimate duration based on word count (assuming ~150 WPM average speaking rate)
+        text = transcript_item["text"]
+        word_count = len(text.split())
+        # Estimate duration: word_count / (150 words/min) * 60 sec/min
+        # Min duration: 0.5 seconds, Max duration based on word count
+        estimated_duration = max(0.5, (word_count / 150.0) * 60.0)
+        
         # Convert to segment format
         segment = {
-            "text": transcript_item["text"],
+            "text": text,
             "speaker": transcript_item["speaker"],
             "start": transcript_item["timestamp"],
-            "end": transcript_item["timestamp"] + 1.0,
+            "end": transcript_item["timestamp"] + estimated_duration,
         }
         
         loop = asyncio.get_running_loop()
@@ -359,14 +377,19 @@ class HabitLinkSession:
         if not self.transcript_buffer:
             return
         
-        # Convert buffer to segment format
+        # Convert buffer to segment format with estimated durations
         segments = []
         for item in self.transcript_buffer:
+            text = item["text"]
+            word_count = len(text.split())
+            # Estimate duration based on average speaking rate (~150 WPM)
+            estimated_duration = max(0.5, (word_count / 150.0) * 60.0)
+            
             segments.append({
-                "text": item["text"],
+                "text": text,
                 "speaker": item["speaker"],
                 "start": item["timestamp"],
-                "end": item["timestamp"] + 1.0,
+                "end": item["timestamp"] + estimated_duration,
             })
         
         # Run LLM analysis
@@ -407,6 +430,33 @@ class HabitLinkSession:
             # Add to buffer for stutter analysis
             audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
             self.audio_buffer.extend(audio_array)
+            
+            # Real-time stutter detection (if enabled)
+            if self.enabled_analyses["stutter"] and self.stutter_detector:
+                self.stutter_detector.add_audio_chunk(audio_chunk)
+                
+                # Check for new detections and send to UI/console
+                recent_events = self.stutter_detector.get_recent_events(time_window=2.0)
+                for event in recent_events:
+                    # Only notify once per event (check if we've already seen it)
+                    event_id = f"{event['type']}_{event['timestamp']:.1f}"
+                    if not hasattr(self, '_notified_stutter_events'):
+                        self._notified_stutter_events = set()
+                    
+                    if event_id not in self._notified_stutter_events:
+                        self._notified_stutter_events.add(event_id)
+                        
+                        # Send feedback
+                        event_type_names = {
+                            'repetition': '반복',
+                            'prolongation': '연장',
+                            'block': '막힘'
+                        }
+                        event_name = event_type_names.get(event['type'], event['type'])
+                        
+                        feedback_msg = f"말더듬 검출 ({event_name})"
+                        self.feedback_queue.put(feedback_msg)
+                        self.ui_feedback_queue.put({"type": "stutter", "message": feedback_msg})
         except Exception as e:
             pass  # Silently ignore errors in callback
     
@@ -572,6 +622,31 @@ class HabitLinkSession:
         if self.enabled_analyses["stutter"]:
             print("\n--- 🗣️ 말더듬 분석 요약 ---")
             
+            # Get real-time detection results first
+            realtime_events = []
+            if self.stutter_detector:
+                realtime_events = self.stutter_detector.get_detected_events()
+                realtime_stats = self.stutter_detector.get_statistics()
+                
+                if realtime_events:
+                    print(f"\n✨ 실시간 오디오 분석 결과 (STT 변환 전 원본 오디오 기반):")
+                    print(f"총 {realtime_stats['total_events']}개의 말더듬 이벤트 실시간 검출")
+                    print(f"  • 반복: {realtime_stats['repetitions']}회")
+                    print(f"  • 연장: {realtime_stats['prolongations']}회")
+                    print(f"  • 막힘: {realtime_stats['blocks']}회")
+                    
+                    # Show some examples
+                    print("\n  최근 검출 예시:")
+                    for event in realtime_events[-5:]:  # Last 5 events
+                        event_type_names = {
+                            'repetition': '반복',
+                            'prolongation': '연장',
+                            'block': '막힘'
+                        }
+                        event_name = event_type_names.get(event['type'], event['type'])
+                        duration_info = f" ({event['duration']}초)" if 'duration' in event else ""
+                        print(f"  - {event_name}{duration_info} (신뢰도: {event.get('confidence', 'N/A')})")
+            
             # Run stutter analysis if enabled and we have audio buffer
             if len(self.audio_buffer) > 0:
                 try:
@@ -586,7 +661,7 @@ class HabitLinkSession:
                         # Save as WAV file
                         sf.write(temp_audio_path, audio_array, 16000)
                         
-                        print("말더듬 분석 중...")
+                        print("\n📊 텍스트 기반 분석 (STT 변환 후):")
                         
                         # Convert transcript buffer to segment format
                         segments = []
@@ -616,10 +691,31 @@ class HabitLinkSession:
                             
                             if repetitions:
                                 print(f"\n🔁 반복 (Repetitions): {len(repetitions)}회")
-                                for rep in repetitions[:3]:
-                                    print(f"  - [{rep.get('timestamp', 0):.1f}s] '{rep.get('full_match')}'")
-                                if len(repetitions) > 3:
-                                    print(f"  ... 그 외 {len(repetitions) - 3}회 더")
+                                
+                                # Count by type
+                                type_counts = {}
+                                for rep in repetitions:
+                                    rep_type = rep.get('type', 'repetition')
+                                    type_counts[rep_type] = type_counts.get(rep_type, 0) + 1
+                                
+                                # Show breakdown
+                                type_names = {
+                                    'repetition': '단어 반복',
+                                    'partial_repetition': '부분 반복',
+                                    'sound_repetition': '음소 반복',
+                                    'multiple_repetition': '다중 반복',
+                                    'word_repetition': '연속 단어 반복'
+                                }
+                                
+                                for rep_type, count in type_counts.items():
+                                    type_name = type_names.get(rep_type, rep_type)
+                                    print(f"  • {type_name}: {count}회")
+                                
+                                print("\n  예시:")
+                                for rep in repetitions[:5]:
+                                    print(f"  - [{rep.get('timestamp', 0):.1f}s] '{rep.get('full_match')}' (타입: {rep.get('type', 'N/A')})")
+                                if len(repetitions) > 5:
+                                    print(f"  ... 그 외 {len(repetitions) - 5}회 더")
                             
                             if prolongations:
                                 print(f"\n⏱️ 연장 (Prolongations): {len(prolongations)}회")
@@ -652,6 +748,32 @@ class HabitLinkSession:
         print("\n" + "="*60)
         print("세션 종료")
         print("="*60)
+        
+        # Generate PDF report
+        print("\n📄 PDF 리포트 생성 중...")
+        try:
+            session_data = {
+                "session_start_time": self.session_start_time,
+                "session_end_time": datetime.now(),
+                "enabled_analyses": self.enabled_analyses,
+                "transcripts": self.transcript_buffer,
+                "keyword_detections": self.all_keyword_detections,
+                "profanity_detections": self.all_profanity_detections,
+                "speech_rate_results": self.all_speech_rate_results,
+                "grammar_errors": self.all_grammar_errors,
+                "context_errors": self.all_context_errors,
+                "stutter_results": self.stutter_results,
+                "stutter_detector_events": self.stutter_detector.get_detected_events() if self.stutter_detector else [],
+                "stutter_detector_stats": self.stutter_detector.get_statistics() if self.stutter_detector else {},
+                "custom_keywords": self.custom_keywords,
+                "target_wpm": self.target_wpm
+            }
+            
+            pdf_path = self.report_generator.generate_report(session_data)
+            print(f"✅ PDF 리포트 생성 완료: {pdf_path}")
+        except Exception as e:
+            print(f"❌ PDF 리포트 생성 실패: {e}")
+            traceback.print_exc()
     
     def run(self, enable_ui: bool = True):
         """Run the main HabitLink session."""
@@ -670,6 +792,10 @@ class HabitLinkSession:
         
         # Prepare session
         self.prepare_session()
+        
+        # Record session start time
+        self.session_start_time = datetime.now()
+        print(f"\n🕐 세션 시작 시각: {self.session_start_time.strftime('%Y년 %m월 %d일 %H:%M:%S')}")
         
         # Start streaming thread
         streaming_thread = threading.Thread(target=self.streaming_producer, daemon=True)
