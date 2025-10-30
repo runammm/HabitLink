@@ -10,6 +10,7 @@ from src.stt import WhisperXDiarizer, GoogleSTTDiarizer
 from src.word_analyzer import WordAnalyzer
 from src.speech_rate_analyzer import SpeechRateAnalyzer
 from src.text_analyzer import TextAnalyzer
+from src.stutter_analyzer import StutterAnalyzer
 from src.utils import load_profanity_list
 
 # --- Suppress library warnings ---
@@ -25,13 +26,14 @@ USE_GCP_STT = True  # Set to False to use the local WhisperX model
 
 # ---------------------------------
 
-async def analyze_audio_file(file_path: str, target_keywords: list = None):
+async def analyze_audio_file(file_path: str, target_keywords: list = None, enable_stutter_analysis: bool = False):
     """
     Analyzes a given audio file using the full analysis pipeline without user enrollment.
     
     Args:
         file_path (str): Path to the audio file to analyze.
         target_keywords (list): List of specific keywords to detect in the audio.
+        enable_stutter_analysis (bool): Whether to run stutter analysis.
     """
     load_dotenv()
 
@@ -63,6 +65,7 @@ async def analyze_audio_file(file_path: str, target_keywords: list = None):
         word_analyzer = WordAnalyzer()
         speech_rate_analyzer = SpeechRateAnalyzer()
         text_analyzer = TextAnalyzer()
+        stutter_analyzer = StutterAnalyzer() if enable_stutter_analysis else None
         
         # 2. Process the audio file to get a diarized transcript
         # This part is CPU-bound and remains synchronous.
@@ -103,10 +106,21 @@ async def analyze_audio_file(file_path: str, target_keywords: list = None):
             # LLM-based analysis is I/O-bound and runs asynchronously.
             llm_analysis_task = text_analyzer.analyze(diarized_transcript)
 
-            # Gather all results
-            detected_profanity, detected_keywords, speech_rate_analysis, llm_analysis_results = await asyncio.gather(
-                profanity_task, keyword_task, speech_rate_task, llm_analysis_task
-            )
+            # Stutter analysis (if enabled) - CPU-bound with audio processing
+            if enable_stutter_analysis and stutter_analyzer:
+                stutter_task = loop.run_in_executor(
+                    pool, stutter_analyzer.analyze, file_path, diarized_transcript
+                )
+                # Gather all results including stutter
+                detected_profanity, detected_keywords, speech_rate_analysis, llm_analysis_results, stutter_results = await asyncio.gather(
+                    profanity_task, keyword_task, speech_rate_task, llm_analysis_task, stutter_task
+                )
+            else:
+                # Gather all results without stutter
+                detected_profanity, detected_keywords, speech_rate_analysis, llm_analysis_results = await asyncio.gather(
+                    profanity_task, keyword_task, speech_rate_task, llm_analysis_task
+                )
+                stutter_results = None
 
         grammar_analysis = llm_analysis_results.get("grammar_errors", [])
         context_analysis_report = llm_analysis_results.get("context_errors", [])
@@ -190,6 +204,36 @@ async def analyze_audio_file(file_path: str, target_keywords: list = None):
                 print(f"\n  - [{error.get('timestamp'):.2f}s, {error.get('speaker')}] \"{error.get('utterance')}\"")
                 print(f"    - Analysis: {error.get('reasoning')}")
         
+        # Stutter Analysis Report
+        if enable_stutter_analysis and stutter_results:
+            print("\n--- 🗣️ Stutter Analysis Report ---")
+            stats = stutter_results.get("statistics", {})
+            repetitions = stutter_results.get("repetitions", [])
+            prolongations = stutter_results.get("prolongations", [])
+            blocks = stutter_results.get("blocks", [])
+            
+            print(f"Fluency Score: {stats.get('fluency_percentage', 0):.1f}%")
+            print(f"Total Events: {stats.get('total_events', 0)}")
+            print(f"\nBreakdown:")
+            print(f"  - Repetitions: {len(repetitions)}")
+            print(f"  - Prolongations: {len(prolongations)}")
+            print(f"  - Blocks: {len(blocks)}")
+            
+            if repetitions:
+                print(f"\n  Repetition Examples:")
+                for rep in repetitions[:3]:
+                    print(f"    - [{rep.get('timestamp', 0):.1f}s] {rep.get('speaker')}: '{rep.get('full_match')}'")
+            
+            if prolongations:
+                print(f"\n  Prolongation Examples:")
+                for prol in prolongations[:3]:
+                    print(f"    - [{prol.get('timestamp', 0):.1f}s] {prol.get('speaker')}: '{prol.get('word')}' ({prol.get('duration')}s)")
+            
+            if blocks:
+                print(f"\n  Block Examples:")
+                for block in blocks[:3]:
+                    print(f"    - [{block.get('timestamp', 0):.1f}s] {block.get('speaker')}: {block.get('duration')}s silence")
+        
         print("\n-----------------------------------------")
 
     except Exception as e:
@@ -213,5 +257,9 @@ if __name__ == "__main__":
     if keywords_input:
         target_keywords = [kw.strip() for kw in keywords_input.split(",") if kw.strip()]
     
+    # Ask if stutter analysis should be enabled
+    stutter_input = input("\n말더듬 분석을 활성화하시겠습니까? (y/n): ").strip().lower()
+    enable_stutter = stutter_input in ['y', 'yes', '예']
+    
     print("\n")
-    asyncio.run(analyze_audio_file(audio_file_to_analyze, target_keywords))
+    asyncio.run(analyze_audio_file(audio_file_to_analyze, target_keywords, enable_stutter))

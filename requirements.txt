@@ -15,3 +15,10 @@ whisperx @ git+https://github.com/m-bain/whisperx.git
 
 # Added for Google Cloud STT
 google-cloud-speech
+
+# Added for stutter analysis (Issue #11)
+librosa
+
+# Added for UI visualization and real-time audio streaming
+pygame
+pyaudio

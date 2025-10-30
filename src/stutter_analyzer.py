@@ -1,0 +1,319 @@
+"""
+Stutter Analyzer Module
+Detects stuttering events using a hybrid approach (text + audio analysis).
+"""
+
+import re
+import librosa
+import numpy as np
+from typing import List, Dict, Any
+
+
+class StutterAnalyzer:
+    """
+    Analyzes audio and text to detect stuttering events like repetitions,
+    prolongations, and blocks.
+    """
+    
+    def __init__(self, 
+                 sample_rate: int = 16000,
+                 prolongation_threshold_sec: float = 0.8,
+                 block_threshold_sec: float = 1.0,
+                 silence_top_db: int = 30):
+        """
+        Initializes the StutterAnalyzer with configurable thresholds.
+        
+        Args:
+            sample_rate (int): Audio sample rate (default: 16000 Hz for GCP STT)
+            prolongation_threshold_sec (float): Duration threshold for prolongations (seconds)
+            block_threshold_sec (float): Duration threshold for blocks/pauses (seconds)
+            silence_top_db (int): dB threshold for silence detection (lower = more sensitive)
+        """
+        self.sr = sample_rate
+        self.prolongation_threshold = prolongation_threshold_sec
+        self.block_threshold = block_threshold_sec
+        self.silence_top_db = silence_top_db
+        
+        # Common Korean filler words that are often prolonged
+        self.filler_words = {'음', '어', '그', '이', '저', '아'}
+    
+    def _detect_repetitions(self, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Analyzes text segments for word repetitions.
+        
+        Args:
+            transcript: Diarized transcript with text and timestamps
+            
+        Returns:
+            List of detected repetitions with context
+        """
+        repetitions = []
+        
+        # Pattern to find consecutive identical words (allowing for spacing variations)
+        # Matches: "나는 나는", "그 그", "이 이" etc.
+        pattern = re.compile(r'\b(\w+)\s+\1\b', re.UNICODE)
+        
+        for segment in transcript:
+            text = segment.get("text", "")
+            speaker = segment.get("speaker", "UNKNOWN")
+            start_time = segment.get("start", 0)
+            
+            if not text:
+                continue
+            
+            # Find all repetitions in this segment
+            matches = list(pattern.finditer(text))
+            
+            for match in matches:
+                repeated_word = match.group(1)
+                
+                repetitions.append({
+                    "type": "repetition",
+                    "word": repeated_word,
+                    "full_match": match.group(0),
+                    "speaker": speaker,
+                    "timestamp": start_time,
+                    "context": text,
+                    "severity": "mild"  # Could be enhanced with count-based severity
+                })
+        
+        return repetitions
+    
+    def _detect_prolongations(self, audio_path: str, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Analyzes audio for prolonged sounds using word-level timestamps.
+        
+        Args:
+            audio_path: Path to the audio file
+            transcript: Diarized transcript with word-level timestamps
+            
+        Returns:
+            List of detected prolongations
+        """
+        prolongations = []
+        
+        try:
+            # Load audio file
+            audio, sr = librosa.load(audio_path, sr=self.sr)
+            
+            for segment in transcript:
+                words = segment.get("words", [])
+                speaker = segment.get("speaker", "UNKNOWN")
+                
+                if not words:
+                    continue
+                
+                for i, word_info in enumerate(words):
+                    word = word_info.get("word", "").strip()
+                    start = word_info.get("start", 0)
+                    end = word_info.get("end", 0)
+                    duration = end - start
+                    
+                    # Check if this word is unusually long
+                    # Target: filler words or first word in segment (common stutter location)
+                    is_filler = any(filler in word for filler in self.filler_words)
+                    is_first_word = i == 0
+                    
+                    if (is_filler or is_first_word) and duration > self.prolongation_threshold:
+                        # Extract audio segment for this word
+                        start_sample = int(start * sr)
+                        end_sample = int(end * sr)
+                        word_audio = audio[start_sample:end_sample]
+                        
+                        # Calculate energy to confirm it's not silence
+                        if len(word_audio) > 0:
+                            rms_energy = np.sqrt(np.mean(word_audio**2))
+                            
+                            # Only flag if there's actual audio content
+                            if rms_energy > 0.01:  # Threshold to ignore near-silence
+                                prolongations.append({
+                                    "type": "prolongation",
+                                    "word": word,
+                                    "duration": round(duration, 2),
+                                    "speaker": speaker,
+                                    "timestamp": start,
+                                    "severity": "severe" if duration > self.prolongation_threshold * 1.5 else "moderate",
+                                    "energy": round(float(rms_energy), 4)
+                                })
+        
+        except Exception as e:
+            print(f"⚠️ Warning: Could not analyze prolongations: {e}")
+        
+        return prolongations
+    
+    def _detect_blocks(self, audio_path: str, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Analyzes audio for blocks (unnatural silences within speech segments).
+        
+        Args:
+            audio_path: Path to the audio file
+            transcript: Diarized transcript with timestamps
+            
+        Returns:
+            List of detected blocks
+        """
+        blocks = []
+        
+        try:
+            # Load audio file
+            audio, sr = librosa.load(audio_path, sr=self.sr)
+            
+            for segment in transcript:
+                start = segment.get("start", 0)
+                end = segment.get("end", 0)
+                speaker = segment.get("speaker", "UNKNOWN")
+                text = segment.get("text", "")
+                
+                # Extract segment audio
+                start_sample = int(start * sr)
+                end_sample = int(end * sr)
+                segment_audio = audio[start_sample:end_sample]
+                
+                if len(segment_audio) == 0:
+                    continue
+                
+                # Use librosa to detect silent intervals within the segment
+                # A block is an unnatural pause WITHIN a continuous speech segment
+                non_silent_intervals = librosa.effects.split(
+                    segment_audio, 
+                    top_db=self.silence_top_db,
+                    frame_length=2048,
+                    hop_length=512
+                )
+                
+                # If there are multiple non-silent intervals, there are silences between them
+                if len(non_silent_intervals) > 1:
+                    for i in range(len(non_silent_intervals) - 1):
+                        # Calculate silence duration between intervals
+                        silence_start_sample = non_silent_intervals[i][1]
+                        silence_end_sample = non_silent_intervals[i + 1][0]
+                        silence_duration = (silence_end_sample - silence_start_sample) / sr
+                        
+                        # If silence is longer than threshold, it's a potential block
+                        if silence_duration > self.block_threshold:
+                            # Calculate timestamp relative to full audio
+                            block_timestamp = start + (silence_start_sample / sr)
+                            
+                            blocks.append({
+                                "type": "block",
+                                "duration": round(silence_duration, 2),
+                                "speaker": speaker,
+                                "timestamp": round(block_timestamp, 2),
+                                "segment_text": text,
+                                "severity": "severe" if silence_duration > self.block_threshold * 1.5 else "moderate"
+                            })
+        
+        except Exception as e:
+            print(f"⚠️ Warning: Could not analyze blocks: {e}")
+        
+        return blocks
+    
+    def analyze(self, audio_path: str, diarized_transcript: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Runs the full stuttering analysis pipeline.
+        
+        Args:
+            audio_path (str): The path to the full audio file
+            diarized_transcript (List[Dict[str, Any]]): The diarized transcript with timestamps
+            
+        Returns:
+            Dict containing lists of detected stuttering events and statistics
+        """
+        # 1. Detect repetitions from text (fast)
+        repetitions = self._detect_repetitions(diarized_transcript)
+        
+        # 2. Detect prolongations from audio (slower)
+        prolongations = self._detect_prolongations(audio_path, diarized_transcript)
+        
+        # 3. Detect blocks from audio (slower)
+        blocks = self._detect_blocks(audio_path, diarized_transcript)
+        
+        # Calculate statistics
+        total_events = len(repetitions) + len(prolongations) + len(blocks)
+        
+        # Calculate overall fluency percentage
+        # This is a simple heuristic: fewer stutter events = higher fluency
+        total_segments = len(diarized_transcript)
+        affected_segments = len(set(
+            [r.get("timestamp") for r in repetitions] +
+            [p.get("timestamp") for p in prolongations] +
+            [b.get("timestamp") for b in blocks]
+        ))
+        
+        fluency_percentage = 0
+        if total_segments > 0:
+            fluency_percentage = ((total_segments - min(affected_segments, total_segments)) / total_segments) * 100
+        
+        return {
+            "repetitions": repetitions,
+            "prolongations": prolongations,
+            "blocks": blocks,
+            "statistics": {
+                "total_events": total_events,
+                "repetition_count": len(repetitions),
+                "prolongation_count": len(prolongations),
+                "block_count": len(blocks),
+                "fluency_percentage": round(fluency_percentage, 1),
+                "affected_segments": affected_segments,
+                "total_segments": total_segments
+            }
+        }
+    
+    def format_summary(self, analysis_results: Dict[str, Any]) -> str:
+        """
+        Formats analysis results into a human-readable summary.
+        
+        Args:
+            analysis_results: Results from analyze() method
+            
+        Returns:
+            Formatted string summary
+        """
+        stats = analysis_results.get("statistics", {})
+        repetitions = analysis_results.get("repetitions", [])
+        prolongations = analysis_results.get("prolongations", [])
+        blocks = analysis_results.get("blocks", [])
+        
+        summary = []
+        summary.append("=" * 60)
+        summary.append("말더듬 분석 결과")
+        summary.append("=" * 60)
+        summary.append(f"\n유창성 점수: {stats.get('fluency_percentage', 0):.1f}%")
+        summary.append(f"총 {stats.get('total_events', 0)}개의 말더듬 이벤트 검출\n")
+        
+        # Repetitions
+        if repetitions:
+            summary.append(f"🔁 반복 (Repetitions): {len(repetitions)}회")
+            for rep in repetitions[:3]:  # Show first 3
+                summary.append(f"   - [{rep.get('timestamp', 0):.1f}s] {rep.get('speaker')}: '{rep.get('full_match')}'")
+            if len(repetitions) > 3:
+                summary.append(f"   ... 그 외 {len(repetitions) - 3}회 더")
+        else:
+            summary.append("🔁 반복 (Repetitions): 없음")
+        
+        # Prolongations
+        summary.append("")
+        if prolongations:
+            summary.append(f"⏱️ 연장 (Prolongations): {len(prolongations)}회")
+            for prol in prolongations[:3]:
+                summary.append(f"   - [{prol.get('timestamp', 0):.1f}s] {prol.get('speaker')}: '{prol.get('word')}' ({prol.get('duration')}초)")
+            if len(prolongations) > 3:
+                summary.append(f"   ... 그 외 {len(prolongations) - 3}회 더")
+        else:
+            summary.append("⏱️ 연장 (Prolongations): 없음")
+        
+        # Blocks
+        summary.append("")
+        if blocks:
+            summary.append(f"🚫 막힘 (Blocks): {len(blocks)}회")
+            for block in blocks[:3]:
+                summary.append(f"   - [{block.get('timestamp', 0):.1f}s] {block.get('speaker')}: {block.get('duration')}초 침묵")
+            if len(blocks) > 3:
+                summary.append(f"   ... 그 외 {len(blocks) - 3}회 더")
+        else:
+            summary.append("🚫 막힘 (Blocks): 없음")
+        
+        summary.append("\n" + "=" * 60)
+        
+        return "\n".join(summary)
+

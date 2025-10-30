@@ -276,6 +276,276 @@ class GoogleSTTDiarizer:
         return segments
 
 
+import pyaudio
+import time
+from queue import Queue
+from typing import Callable, Optional
+
+class GoogleSTTStreaming:
+    """
+    A class to perform real-time streaming transcription using Google Cloud STT with websocket.
+    Includes automatic reconnection logic to handle the 5-minute streaming limit.
+    """
+    
+    # Audio recording parameters
+    RATE = 16000
+    CHUNK = int(RATE / 10)  # 100ms chunks
+    
+    # Streaming time limit (4 minutes to be safe, GCP limit is 5 minutes)
+    STREAMING_LIMIT = 240
+    
+    def __init__(self, callback: Optional[Callable] = None):
+        """
+        Initialize the streaming STT client.
+        
+        Args:
+            callback: Optional callback function to receive transcription results
+                     Signature: callback(transcript: str, is_final: bool, speaker: str)
+        """
+        self.client = speech.SpeechClient()
+        self.callback = callback
+        self.audio_queue = Queue()
+        self.is_running = False
+        self.restart_counter = 0
+        self.audio_input = []
+        self.last_audio_input = []
+        self.result_end_time = 0
+        self.is_final_end_time = 0
+        self.final_request_end_time = 0
+        self.bridging_offset = 0
+        self.last_transcript_was_final = False
+        self.new_stream = True
+        
+    def get_current_time(self):
+        """Return current time in milliseconds."""
+        return int(round(time.time() * 1000))
+    
+    def duration_to_secs(self, duration):
+        """Convert duration object to seconds."""
+        return duration.seconds + duration.nanos / 1e9
+    
+    def audio_generator(self):
+        """
+        Generator that yields audio chunks from the queue.
+        This is used to stream audio to Google Cloud STT.
+        """
+        while self.is_running:
+            # Use a blocking get() to ensure there's at least one chunk of data
+            chunk = self.audio_queue.get()
+            if chunk is None:
+                return
+            
+            data = [chunk]
+            
+            # Now consume whatever other data's still buffered
+            while not self.audio_queue.empty():
+                chunk = self.audio_queue.get()
+                if chunk is None:
+                    return
+                data.append(chunk)
+            
+            yield b''.join(data)
+    
+    def listen_print_loop(self, responses):
+        """
+        Iterates through server responses and prints them.
+        
+        The responses passed is a generator that will block until a response
+        is provided by the server.
+        """
+        for response in responses:
+            if not response.results:
+                continue
+            
+            # The results list is consecutive. For streaming, we only care about
+            # the first result being considered, since once it's is_final, it
+            # moves on to considering the next utterance.
+            result = response.results[0]
+            if not result.alternatives:
+                continue
+            
+            # Extract transcript
+            transcript = result.alternatives[0].transcript
+            
+            # Get timing information
+            result_seconds = 0
+            result_nanos = 0
+            
+            if result.result_end_time:
+                result_seconds = result.result_end_time.seconds
+                result_nanos = result.result_end_time.nanos
+            
+            stream_time = self.STREAMING_LIMIT * self.restart_counter
+            self.result_end_time = int((result_seconds * 1000) + (result_nanos / 1000000))
+            
+            corrected_time = (
+                self.result_end_time - self.bridging_offset + stream_time
+            )
+            
+            # Determine speaker (placeholder since streaming doesn't support diarization well)
+            speaker = "SPEAKER_00"
+            
+            if result.is_final:
+                # Final result
+                self.is_final_end_time = self.result_end_time
+                self.last_transcript_was_final = True
+                
+                # Call callback if provided
+                if self.callback:
+                    self.callback(transcript, True, speaker)
+                
+                # Store the transcript
+                print(f"✅ Final: {transcript}")
+            else:
+                # Interim result
+                self.last_transcript_was_final = False
+                
+                # Call callback if provided
+                if self.callback:
+                    self.callback(transcript, False, speaker)
+                
+                # Print interim result (overwrite previous line)
+                print(f"⏳ Interim: {transcript}", end='\r')
+    
+    def start_streaming(self, duration: Optional[float] = None):
+        """
+        Start streaming audio from microphone to Google Cloud STT.
+        
+        Args:
+            duration: Optional duration in seconds. If None, streams indefinitely.
+        """
+        self.is_running = True
+        
+        # Configure audio input
+        audio_interface = pyaudio.PyAudio()
+        
+        try:
+            # Open microphone stream
+            mic_stream = audio_interface.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.RATE,
+                input=True,
+                frames_per_buffer=self.CHUNK,
+            )
+            
+            print("🎤 Streaming started...")
+            
+            start_time = time.time()
+            
+            while self.is_running:
+                # Check duration limit
+                if duration and (time.time() - start_time) >= duration:
+                    break
+                
+                self.audio_input = []
+                audio_stream = self.audio_generator()
+                
+                # Configure streaming recognition
+                config = speech.RecognitionConfig(
+                    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                    sample_rate_hertz=self.RATE,
+                    language_code="ko-KR",
+                    enable_automatic_punctuation=True,
+                    max_alternatives=1,
+                )
+                
+                streaming_config = speech.StreamingRecognitionConfig(
+                    config=config,
+                    interim_results=True,
+                )
+                
+                # Start streaming recognize
+                print(f"\n📡 Opening new stream (restart #{self.restart_counter})...")
+                
+                # Create audio request generator
+                audio_requests = (
+                    speech.StreamingRecognizeRequest(audio_content=content)
+                    for content in audio_stream
+                )
+                
+                # Make streaming request
+                responses = self.client.streaming_recognize(
+                    config=streaming_config,
+                    requests=audio_requests,
+                )
+                
+                # Start microphone reading thread
+                mic_thread_active = True
+                
+                def fill_buffer():
+                    """Continuously collect audio from microphone and add to queue."""
+                    nonlocal mic_thread_active
+                    stream_start_time = self.get_current_time()
+                    
+                    while mic_thread_active and self.is_running:
+                        try:
+                            # Check if we've hit the streaming limit
+                            if (self.get_current_time() - stream_start_time) > (self.STREAMING_LIMIT * 1000):
+                                break
+                            
+                            # Read audio chunk
+                            data = mic_stream.read(self.CHUNK, exception_on_overflow=False)
+                            
+                            # Add to queue for streaming
+                            self.audio_queue.put(data)
+                            
+                            # Store for bridging
+                            self.audio_input.append(data)
+                            
+                        except Exception as e:
+                            print(f"⚠️ Error reading microphone: {e}")
+                            break
+                
+                import threading
+                mic_thread = threading.Thread(target=fill_buffer)
+                mic_thread.start()
+                
+                # Process responses
+                try:
+                    self.listen_print_loop(responses)
+                except Exception as e:
+                    print(f"\n⚠️ Stream error: {e}")
+                
+                # Stop microphone thread
+                mic_thread_active = False
+                mic_thread.join()
+                
+                # Signal end of stream
+                self.audio_queue.put(None)
+                
+                # Check if we should continue
+                if duration and (time.time() - start_time) >= duration:
+                    break
+                
+                # Prepare for reconnection
+                if self.is_running:
+                    if self.last_transcript_was_final:
+                        self.bridging_offset = 0
+                    else:
+                        # Carry over partial audio for continuity
+                        self.bridging_offset = self.result_end_time
+                    
+                    # Increment restart counter
+                    self.restart_counter += 1
+                    
+                    # Brief pause before reconnecting
+                    time.sleep(0.1)
+            
+        finally:
+            # Cleanup
+            mic_stream.stop_stream()
+            mic_stream.close()
+            audio_interface.terminate()
+            self.is_running = False
+            print("\n🎤 Streaming stopped.")
+    
+    def stop_streaming(self):
+        """Stop the streaming process."""
+        self.is_running = False
+        self.audio_queue.put(None)
+
+
 if __name__ == '__main__':
     # This is a test script to verify the functionality.
     # To run this, you need a multi-speaker audio file.

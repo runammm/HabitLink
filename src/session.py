@@ -1,8 +1,3 @@
-"""
-HabitLink Session Manager
-Handles the multi-threaded Producer-Consumer architecture for real-time speech analysis.
-"""
-
 import os
 import time
 import asyncio
@@ -19,6 +14,7 @@ from .stt import GoogleSTTDiarizer
 from .word_analyzer import WordAnalyzer
 from .speech_rate_analyzer import SpeechRateAnalyzer
 from .text_analyzer import TextAnalyzer
+from .stutter_analyzer import StutterAnalyzer
 from .utils import load_profanity_list
 
 
@@ -34,6 +30,7 @@ class HabitLinkSession:
         self.word_analyzer = None
         self.speech_rate_analyzer = None
         self.text_analyzer = None
+        self.stutter_analyzer = None
         self.profanity_list = []
         
         # User configuration
@@ -42,7 +39,8 @@ class HabitLinkSession:
             "profanity_detection": False,
             "speech_rate": False,
             "grammar": False,
-            "context": False
+            "context": False,
+            "stutter": False
         }
         self.custom_keywords = []
         self.target_wpm = None
@@ -73,6 +71,7 @@ class HabitLinkSession:
             self.word_analyzer = WordAnalyzer()
             self.speech_rate_analyzer = SpeechRateAnalyzer()
             self.text_analyzer = TextAnalyzer()
+            self.stutter_analyzer = StutterAnalyzer()
             print("✅ Analysis modules initialized")
             
             # Load profanity list
@@ -97,6 +96,7 @@ class HabitLinkSession:
         print("3. 발화 속도 분석")
         print("4. 문법 분석")
         print("5. 맥락 분석")
+        print("6. 말더듬 분석")
         print("\n여러 개를 선택하려면 쉼표로 구분하세요 (예: 1,3,4)")
         
         selection = input("\n선택: ").strip()
@@ -126,6 +126,10 @@ class HabitLinkSession:
         if "5" in selected_numbers:
             self.enabled_analyses["context"] = True
             print("✅ 맥락 분석이 활성화되었습니다.")
+        
+        if "6" in selected_numbers:
+            self.enabled_analyses["stutter"] = True
+            print("✅ 말더듬 분석이 활성화되었습니다.")
     
     def prepare_session(self):
         """Prepare the session based on selected analyses."""
@@ -148,7 +152,7 @@ class HabitLinkSession:
         if self.enabled_analyses["speech_rate"]:
             print("\n--- 발화 속도 분석 설정 ---")
             print("원하는 발화 속도를 파악하기 위해 다음 문장을 읽어주세요:")
-            calibration_text = "죽는 날까지 하늘을 우러러 한 점 부끄럼이 없기를, 잎새에 이는 바람에도 나는 괴로워했다."
+            calibration_text = "죽는 날까지 하늘을 우러러 한 점 부끄럼이 없기를, 잎새에 이는 바람에도 나는 괴로워했다. 오늘 밤에도 별이 바람에 스치운다."
             print(f"\n\"{calibration_text}\"\n")
             input("준비가 되셨으면 Enter 키를 누르고 위 문장을 읽기 시작하세요...")
             
@@ -276,7 +280,8 @@ class HabitLinkSession:
                 "detected_profanity": [],
                 "speech_rate_analysis": [],
                 "grammar_analysis": [],
-                "context_analysis": []
+                "context_analysis": [],
+                "stutter_analysis": None
             }
             
             # Prepare concurrent tasks
@@ -310,6 +315,13 @@ class HabitLinkSession:
                     llm_task = self.text_analyzer.analyze(diarized_transcript)
                     tasks.append(("llm", llm_task))
                 
+                # Stutter analysis (medium speed, audio + text hybrid)
+                if self.enabled_analyses["stutter"]:
+                    stutter_task = loop.run_in_executor(
+                        pool, self.stutter_analyzer.analyze, audio_path, diarized_transcript
+                    )
+                    tasks.append(("stutter", stutter_task))
+                
                 # Wait for all tasks to complete
                 for task_name, task in tasks:
                     try:
@@ -334,6 +346,11 @@ class HabitLinkSession:
                             results["grammar_analysis"] = result.get("grammar_errors", [])
                             results["context_analysis"] = result.get("context_errors", [])
                             # LLM results are primarily for the final report
+                        
+                        elif task_name == "stutter":
+                            results["stutter_analysis"] = result
+                            # Stutter analysis feedback (sensitive - minimal real-time feedback)
+                            self._send_stutter_feedback(result, chunk_id)
                     
                     except Exception as e:
                         print(f"⚠️ Error in {task_name} analysis: {e}")
@@ -383,6 +400,24 @@ class HabitLinkSession:
                     self.feedback_queue.put(
                         f"[청크 {chunk_id}] 🐢 발화 속도가 느립니다: {wpm:.0f} WPM ({speaker})"
                     )
+    
+    def _send_stutter_feedback(self, stutter_analysis: Dict[str, Any], chunk_id: int):
+        """
+        Send minimal, sensitive real-time feedback for stutter detection.
+        Following best practices: avoid punitive real-time feedback.
+        """
+        if not stutter_analysis:
+            return
+        
+        stats = stutter_analysis.get("statistics", {})
+        total_events = stats.get("total_events", 0)
+        
+        # Only provide gentle, positive feedback if events are detected
+        # Focus on encouragement rather than criticism
+        if total_events > 0:
+            fluency = stats.get("fluency_percentage", 0)
+            # No negative real-time alerts - save details for post-session report
+            # Users can review the summary report for detailed analysis
     
     def feedback_loop(self):
         """Main thread feedback loop: prints real-time feedback to the console."""
@@ -540,6 +575,60 @@ class HabitLinkSession:
                     print(f"\n  ... 그 외 {len(all_context_errors) - 5}개 더")
             else:
                 print("맥락 오류가 발견되지 않았습니다.")
+        
+        # Stutter analysis summary (sensitive - positive framing)
+        if self.enabled_analyses["stutter"]:
+            print("\n--- 🗣️ 말더듬 분석 요약 ---")
+            
+            # Aggregate all stutter analyses
+            all_repetitions = []
+            all_prolongations = []
+            all_blocks = []
+            total_fluency = []
+            
+            for result in self.results_store:
+                stutter_data = result.get("stutter_analysis")
+                if stutter_data:
+                    all_repetitions.extend(stutter_data.get("repetitions", []))
+                    all_prolongations.extend(stutter_data.get("prolongations", []))
+                    all_blocks.extend(stutter_data.get("blocks", []))
+                    stats = stutter_data.get("statistics", {})
+                    if stats.get("fluency_percentage", 0) > 0:
+                        total_fluency.append(stats.get("fluency_percentage", 0))
+            
+            if total_fluency:
+                avg_fluency = sum(total_fluency) / len(total_fluency)
+                print(f"전체 유창성 점수: {avg_fluency:.1f}%")
+                
+                total_events = len(all_repetitions) + len(all_prolongations) + len(all_blocks)
+                print(f"총 {total_events}개의 말더듬 이벤트 검출")
+                
+                # Show breakdown by type
+                print(f"\n이벤트 유형별:")
+                print(f"  - 반복 (Repetitions): {len(all_repetitions)}회")
+                print(f"  - 연장 (Prolongations): {len(all_prolongations)}회")
+                print(f"  - 막힘 (Blocks): {len(all_blocks)}회")
+                
+                # Show examples (limited for sensitivity)
+                if all_repetitions:
+                    print(f"\n예시 - 반복:")
+                    for rep in all_repetitions[:2]:
+                        print(f"  - [{rep.get('timestamp', 0):.1f}s] '{rep.get('full_match')}'")
+                
+                if all_prolongations:
+                    print(f"\n예시 - 연장:")
+                    for prol in all_prolongations[:2]:
+                        print(f"  - [{prol.get('timestamp', 0):.1f}s] '{prol.get('word')}' ({prol.get('duration')}초)")
+                
+                if all_blocks:
+                    print(f"\n예시 - 막힘:")
+                    for block in all_blocks[:2]:
+                        print(f"  - [{block.get('timestamp', 0):.1f}s] {block.get('duration')}초 침묵")
+                
+                # Positive closing message
+                print(f"\n💡 유창성 {avg_fluency:.0f}%로 좋은 발화를 보여주셨습니다!")
+            else:
+                print("말더듬 이벤트가 감지되지 않았습니다. 유창한 발화입니다! 👍")
         
         print("\n" + "="*60)
         print("세션 종료")
