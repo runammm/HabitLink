@@ -74,6 +74,7 @@ class HabitLinkSession:
         
         # Track processed transcripts to avoid duplicates
         self.processed_transcript_ids = set()
+        self.llm_analyzed_transcript_ids = set()  # Track transcripts already analyzed by LLM
         
         # Session metadata
         self.session_start_time = None
@@ -126,7 +127,7 @@ class HabitLinkSession:
         print("4. 문법 분석")
         print("5. 맥락 분석")
         print("6. 말더듬 분석")
-        print("7. 방언 분석 (AI 모델)")
+        print("7. 방언 분석")
         print("\n여러 개를 선택하려면 쉼표로 구분하세요 (예: 1,3,4,7)")
         
         selection = input("\n선택: ").strip()
@@ -490,9 +491,23 @@ class HabitLinkSession:
         if not self.transcript_buffer:
             return
         
+        # Filter out already analyzed transcripts
+        new_transcripts = [
+            item for item in self.transcript_buffer 
+            if item["id"] not in self.llm_analyzed_transcript_ids
+        ]
+        
+        # If no new transcripts, skip analysis
+        if not new_transcripts:
+            return
+        
+        # Mark these transcripts as analyzed
+        for item in new_transcripts:
+            self.llm_analyzed_transcript_ids.add(item["id"])
+        
         # Convert buffer to segment format with estimated durations
         segments = []
-        for item in self.transcript_buffer:
+        for item in new_transcripts:
             text = item["text"]
             word_count = len(text.split())
             # Estimate duration based on average speaking rate (~150 WPM)
