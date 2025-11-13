@@ -17,6 +17,7 @@ from .speech_rate_analyzer import SpeechRateAnalyzer
 from .text_analyzer import TextAnalyzer
 from .stutter_analyzer import StutterAnalyzer
 from .stutter_detector import StutterDetector
+from .dialect_analyzer import DialectAnalyzer
 from .utils import load_profanity_list
 from .report_generator import ReportGenerator
 
@@ -35,6 +36,7 @@ class HabitLinkSession:
         self.text_analyzer = None
         self.stutter_analyzer = None
         self.stutter_detector = None  # Real-time audio-based stutter detection
+        self.dialect_analyzer = None  # Dialect detection
         self.profanity_list = []
         
         # User configuration
@@ -44,7 +46,8 @@ class HabitLinkSession:
             "speech_rate": False,
             "grammar": False,
             "context": False,
-            "stutter": False
+            "stutter": False,
+            "dialect": False
         }
         self.custom_keywords = []
         self.target_wpm = None
@@ -67,6 +70,7 @@ class HabitLinkSession:
         self.all_grammar_errors = []
         self.all_context_errors = []
         self.stutter_results = None
+        self.dialect_results = []  # Store dialect analysis results
         
         # Track processed transcripts to avoid duplicates
         self.processed_transcript_ids = set()
@@ -92,6 +96,11 @@ class HabitLinkSession:
             self.text_analyzer = TextAnalyzer()
             self.stutter_analyzer = StutterAnalyzer()
             self.stutter_detector = StutterDetector()
+            
+            # Initialize dialect analyzer (optional - only if model exists)
+            model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "dialect_classifier", "final_model")
+            self.dialect_analyzer = DialectAnalyzer(model_path)
+            
             print("✅ Analysis modules initialized")
             
             # Load profanity list
@@ -117,7 +126,8 @@ class HabitLinkSession:
         print("4. 문법 분석")
         print("5. 맥락 분석")
         print("6. 말더듬 분석")
-        print("\n여러 개를 선택하려면 쉼표로 구분하세요 (예: 1,3,4)")
+        print("7. 방언 분석 (AI 모델)")
+        print("\n여러 개를 선택하려면 쉼표로 구분하세요 (예: 1,3,4,7)")
         
         selection = input("\n선택: ").strip()
         
@@ -150,6 +160,14 @@ class HabitLinkSession:
         if "6" in selected_numbers:
             self.enabled_analyses["stutter"] = True
             print("✅ 말더듬 분석이 활성화되었습니다.")
+        
+        if "7" in selected_numbers:
+            if self.dialect_analyzer and self.dialect_analyzer.is_available():
+                self.enabled_analyses["dialect"] = True
+                print("✅ 방언 분석이 활성화되었습니다.")
+            else:
+                print("⚠️ 방언 분석 모델이 준비되지 않았습니다.")
+                print("   'notebooks/dialect_model_training.ipynb'를 실행하여 모델을 먼저 학습시켜주세요.")
     
     def prepare_session(self):
         """Prepare the session based on selected analyses."""
@@ -867,6 +885,62 @@ class HabitLinkSession:
             else:
                 print("분석할 오디오 데이터가 없습니다.")
         
+        # Dialect analysis summary
+        if self.enabled_analyses["dialect"]:
+            print("\n--- 🗣️ 방언 분석 요약 ---")
+            
+            if self.dialect_analyzer and self.dialect_analyzer.is_available():
+                if len(self.audio_buffer) > 0:
+                    try:
+                        import tempfile
+                        import soundfile as sf
+                        
+                        # Save entire session audio to temporary file
+                        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                            temp_audio_path = temp_audio.name
+                            # Convert deque to numpy array
+                            audio_array = np.array(list(self.audio_buffer), dtype=np.int16)
+                            # Save as WAV file
+                            sf.write(temp_audio_path, audio_array, 16000)
+                            
+                            print("\n📊 전체 세션 방언 분석 중...")
+                            
+                            # Analyze dialect
+                            dialect_result = self.dialect_analyzer.analyze(temp_audio_path, top_k=5)
+                            
+                            if "error" not in dialect_result:
+                                # Store for report
+                                self.dialect_results = dialect_result
+                                
+                                # Display results
+                                print("\n방언 확률 분포:")
+                                for dialect, score in sorted(dialect_result.items(), key=lambda x: x[1], reverse=True):
+                                    dialect_kr = self.dialect_analyzer.get_dialect_name_korean(dialect)
+                                    bar_length = int(score * 50)
+                                    bar = "█" * bar_length + "░" * (50 - bar_length)
+                                    print(f"  {dialect_kr:25s} [{bar}] {score*100:.2f}%")
+                                
+                                # Get top dialect
+                                top_dialect_info = self.dialect_analyzer.get_top_dialect(temp_audio_path)
+                                if top_dialect_info["dialect"]:
+                                    top_dialect_kr = self.dialect_analyzer.get_dialect_name_korean(top_dialect_info["dialect"])
+                                    confidence = top_dialect_info["confidence"]
+                                    print(f"\n✨ 주요 방언: {top_dialect_kr} (신뢰도: {confidence*100:.2f}%)")
+                            else:
+                                print(f"❌ 방언 분석 실패: {dialect_result['error']}")
+                            
+                            # Clean up temp file
+                            os.remove(temp_audio_path)
+                    
+                    except Exception as e:
+                        print(f"❌ 방언 분석 중 오류 발생: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print("분석할 오디오 데이터가 없습니다.")
+            else:
+                print("방언 분석 모델이 로드되지 않았습니다.")
+        
         print("\n" + "="*60)
         print("세션 종료")
         print("="*60)
@@ -887,6 +961,7 @@ class HabitLinkSession:
                 "stutter_results": self.stutter_results,
                 "stutter_detector_events": self.stutter_detector.get_detected_events() if self.stutter_detector else [],
                 "stutter_detector_stats": self.stutter_detector.get_statistics() if self.stutter_detector else {},
+                "dialect_results": self.dialect_results,  # Add dialect results
                 "custom_keywords": self.custom_keywords,
                 "target_wpm": self.target_wpm
             }

@@ -26,6 +26,7 @@ Our main goals are:
 - **🤖 Grammar Analysis**: LLM-powered detection of spoken grammar errors
 - **🧠 Context Analysis**: Evaluates contextual appropriateness of utterances
 - **🗣️ Stutter Analysis**: Dual-mode detection using both real-time audio and post-processing
+- **🌏 Dialect Detection**: AI-powered Korean dialect classification (Gyeongsang, Jeolla, Chungcheong, etc.)
 - **📄 PDF Reports**: Comprehensive post-session reports with detailed analytics
 
 ---
@@ -36,6 +37,7 @@ Our main goals are:
 |---------------|-------------------------------------------------------------------------------------|
 | **STT**       | Google Cloud Speech-to-Text (Streaming API)                                        |
 | **LLM**       | Groq API (for grammar and context analysis)                                         |
+| **AI Model**  | Wav2Vec2 (for dialect classification)                                               |
 | **Audio**     | PyAudio, SoundDevice, Librosa                                                      |
 | **UI**        | Pygame                                                                              |
 | **Reports**   | ReportLab                                                                           |
@@ -98,6 +100,13 @@ HabitLink uses a multi-threaded streaming architecture:
 6. **Prepare profanity list:**
    - Create `.data/profanity_list_ko.txt` with Korean profanity words (one per line)
 
+7. **(Optional) Set up Dialect Detection:**
+   - Follow the guide in `DIALECT_GUIDE.md` to train your dialect classification model
+   - Requires additional dependencies: `transformers`, `torch`, `datasets`
+   ```bash
+   pip install transformers torch datasets accelerate evaluate scikit-learn
+   ```
+
 ### Running the Application
 
 ```bash
@@ -135,6 +144,15 @@ Dual-mode detection:
 - **Real-time**: Audio-based detection using MFCC, ZCR, and RMS energy
 - **Post-processing**: Text-based pattern matching for repetitions, prolongations, and blocks
 
+### 7. Dialect Detection (AI Model)
+AI-powered Korean dialect classification:
+- **Supported Dialects**: Standard Korean (Seoul), Gyeongsang, Jeolla, Chungcheong, Gangwon, Jeju
+- **Technology**: Fine-tuned Wav2Vec2 model
+- **Output**: Probability distribution across all dialects with confidence scores
+- **Setup Required**: Train the model using your own dialect dataset (see `DIALECT_GUIDE.md`)
+
+**Note**: This feature requires additional setup. See [Dialect Analysis Guide](DIALECT_GUIDE.md) for detailed instructions.
+
 ---
 
 ## 🎨 UI Features
@@ -157,6 +175,7 @@ After each session, HabitLink generates a comprehensive PDF report containing:
 - Grammar errors with corrections and explanations
 - Context errors with reasoning
 - Stutter analysis (both real-time and text-based)
+- Dialect analysis with probability distribution (if enabled)
 
 Reports are saved to `.data/report/habitlink_report_YYYYMMDD_HHMMSS.pdf`
 
@@ -169,10 +188,11 @@ Reports are saved to `.data/report/habitlink_report_YYYYMMDD_HHMMSS.pdf`
 ### Completed Features
 - ✅ Real-time Google Cloud STT streaming with reconnection
 - ✅ Interactive Pygame UI with audio visualization
-- ✅ All 6 analysis modules functional
+- ✅ All 7 analysis modules functional (including AI-powered dialect detection)
 - ✅ PDF report generation with Korean font support
 - ✅ Multi-threaded architecture for responsiveness
 - ✅ Comprehensive error handling
+- ✅ Dialect classification with fine-tunable Wav2Vec2 model
 
 ### Future Goals
 - [ ] Web dashboard for progress tracking

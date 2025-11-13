@@ -21,3 +21,15 @@ pyaudio
 
 # PDF report generation
 reportlab
+
+# Dialect Analysis (AI Model) - Optional
+# Install these only if you plan to use dialect detection feature
+# transformers>=4.30.0
+# torch>=2.0.0
+# datasets>=2.14.0
+# accelerate>=0.20.0
+# evaluate>=0.4.0
+# scikit-learn>=1.3.0
+
+# Note: Uncomment the above lines and run 'pip install -r requirements.txt'
+# if you want to train and use the dialect detection model
