@@ -16,10 +16,10 @@ class StutterDetector:
                  sample_rate: int = 16000,
                  frame_length: int = 2048,
                  hop_length: int = 512,
-                 energy_threshold: float = 0.025, 
-                 repetition_similarity_threshold: float = 0.89, 
-                 prolongation_duration_threshold: float = 0.95, 
-                 silence_duration_threshold: float = 1.2): 
+                 energy_threshold: float = 0.04,  # 더 완화: 0.025 -> 0.04
+                 repetition_similarity_threshold: float = 0.95,  # 더 엄격: 0.89 -> 0.95 (반복 검출을 더 엄격하게)
+                 prolongation_duration_threshold: float = 1.5,  # 더 완화: 0.95 -> 1.5초 (연장 검출을 더 완화)
+                 silence_duration_threshold: float = 1.8):  # 더 완화: 1.2 -> 1.8초 
         """
         Initialize the real-time stutter detector.
         
@@ -66,9 +66,9 @@ class StutterDetector:
             # Add to buffer
             self.audio_buffer.extend(audio_array)
             
-            # Analyze every 0.7 seconds (중간값: 0.5와 1.0의 중간보다 약간 길게)
+            # Analyze every 1.2 seconds (더 긴 간격으로 분석 빈도 감소)
             current_time = time.time()
-            if current_time - self.last_analysis_time >= 0.7:
+            if current_time - self.last_analysis_time >= 1.2:
                 self._analyze_current_buffer(current_time)
                 self.last_analysis_time = current_time
         
@@ -170,8 +170,8 @@ class StutterDetector:
             # Find regions with low ZCR and sustained energy (prolongations)
             prolonged_frames = 0
             for i in range(len(zcr)):
-                # 중간 조건: ZCR < 0.09, RMS > threshold * 1.3
-                if zcr[i] < 0.09 and rms[i] > self.energy_threshold * 1.3:
+                # 더 엄격한 조건: ZCR < 0.07, RMS > threshold * 1.5 (연장 검출을 더 엄격하게)
+                if zcr[i] < 0.07 and rms[i] > self.energy_threshold * 1.5:
                     prolonged_frames += 1
                 else:
                     if prolonged_frames > 0:
@@ -182,7 +182,7 @@ class StutterDetector:
                                 'type': 'prolongation',
                                 'timestamp': timestamp - duration,
                                 'duration': round(duration, 2),
-                                'severity': 'severe' if duration > 1.4 else 'moderate'  # 중간값
+                                'severity': 'severe' if duration > 2.0 else 'moderate'  # 더 엄격: 1.4 -> 2.0초
                             }
                             
                             if not self._is_duplicate_event(event):
@@ -208,8 +208,8 @@ class StutterDetector:
                     gap_end = intervals[i + 1][0]
                     gap_duration = (gap_end - gap_start) / self.sr
                     
-                    # Block 검출: 1.2초 이상 2.5초 미만 (중간 범위)
-                    if 1.2 < gap_duration < 2.5:
+                    # Block 검출: 1.8초 이상 3.0초 미만 (더 완화된 범위)
+                    if 1.8 < gap_duration < 3.0:
                         event = {
                             'type': 'block',
                             'timestamp': timestamp - ((len(audio) - gap_start) / self.sr),
@@ -223,7 +223,7 @@ class StutterDetector:
         except Exception as e:
             pass
     
-    def _is_duplicate_event(self, new_event: Dict[str, Any], time_window: float = 1.8) -> bool:
+    def _is_duplicate_event(self, new_event: Dict[str, Any], time_window: float = 2.5) -> bool:
         """
         Check if this event is a duplicate of a recent event.
         

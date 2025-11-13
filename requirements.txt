@@ -1,27 +1,23 @@
+# Core dependencies
 numpy
-groq
 python-dotenv
-# Added for stt (Issue #3)
+
+# LLM Analysis
+groq
+
+# Audio processing
 sounddevice
 soundfile
-openai-whisper
-ipykernel
-ipywidgets
-# Added for diarization (Issue #4)
-torch
-torchaudio
-scipy
-whisperx @ git+https://github.com/m-bain/whisperx.git
 
-# Added for Google Cloud STT
+# Google Cloud STT
 google-cloud-speech
 
-# Added for stutter analysis (Issue #11)
+# Speech analysis
 librosa
 
-# Added for UI visualization and real-time audio streaming
+# UI visualization and real-time audio streaming
 pygame
 pyaudio
 
-# Added for PDF report generation
+# PDF report generation
 reportlab

@@ -5,7 +5,7 @@ import threading
 from queue import Queue, Empty
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import Dict, Optional
 import concurrent.futures
 import traceback
 import numpy as np
@@ -51,10 +51,9 @@ class HabitLinkSession:
         
         # Threading components
         self.feedback_queue = Queue()
-        self.ui_feedback_queue = Queue()  # For UI visualizer
-        self.audio_queue = Queue()  # For UI audio visualization
+        self.ui_feedback_queue = Queue()
+        self.audio_queue = Queue()
         self.stop_event = threading.Event()
-        self.results_store = []
         
         # Streaming buffers
         self.transcript_buffer = []  # Buffer for recent transcripts
@@ -72,9 +71,8 @@ class HabitLinkSession:
         # Track processed transcripts to avoid duplicates
         self.processed_transcript_ids = set()
         
-        # Session metadata for report
+        # Session metadata
         self.session_start_time = None
-        self.session_end_time = None
         
         # Report generator
         self.report_generator = ReportGenerator()
@@ -183,12 +181,39 @@ class HabitLinkSession:
                 calibration_duration = 15.0
                 calibration_path = self.audio_engine.record(calibration_duration, "calibration_temp.wav")
                 
-                # For calibration, use the old batch processing
-                from .stt import GoogleSTTDiarizer
-                temp_diarizer = GoogleSTTDiarizer()
+                # Use Google Cloud STT for calibration
+                from google.cloud import speech
+                client = speech.SpeechClient()
                 
                 print("발화 속도를 분석 중...")
-                calibration_transcript = temp_diarizer.process(calibration_path)
+                print("Sending request to Google Cloud STT...")
+                
+                with open(calibration_path, "rb") as audio_file:
+                    content = audio_file.read()
+                
+                audio = speech.RecognitionAudio(content=content)
+                config = speech.RecognitionConfig(
+                    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                    sample_rate_hertz=16000,
+                    language_code="ko-KR",
+                    enable_automatic_punctuation=True,
+                )
+                
+                print("Waiting for Google Cloud STT to complete...")
+                response = client.recognize(config=config, audio=audio)
+                print("Received response from Google Cloud STT.")
+                
+                # Convert response to segments format
+                calibration_transcript = []
+                if response.results:
+                    for result in response.results:
+                        if result.alternatives:
+                            calibration_transcript.append({
+                                "text": result.alternatives[0].transcript,
+                                "speaker": "SPEAKER_00",
+                                "start": 0,
+                                "end": 15,
+                            })
                 
                 if calibration_transcript:
                     # Analyze speech rate
@@ -222,7 +247,7 @@ class HabitLinkSession:
         
         print("\n✅ 세션 준비 완료!")
     
-    def stt_callback(self, transcript: str, is_final: bool, speaker: str):
+    def stt_callback(self, transcript: str, is_final: bool, speaker: str, timing_info: Optional[Dict] = None):
         """
         Callback function for streaming STT results.
         
@@ -230,14 +255,31 @@ class HabitLinkSession:
             transcript: The transcribed text
             is_final: Whether this is a final result
             speaker: Speaker label
+            timing_info: Optional dict with 'start_time', 'end_time', and 'word_timestamps'
         """
         if not transcript:
             return
         
-        # Add to buffer
-        timestamp = time.time()
-        
         if is_final:
+            # Use actual audio timestamps if available, otherwise fall back to current time
+            if timing_info and timing_info.get("start_time") is not None:
+                # Use actual audio start time (relative to session start)
+                audio_start_time = timing_info["start_time"]
+                audio_end_time = timing_info.get("end_time", audio_start_time)
+                
+                # Store session start time if not set
+                if self.session_start_time is None:
+                    # Calculate session start: current time - audio_start_time
+                    self.session_start_time = datetime.fromtimestamp(time.time() - audio_start_time)
+                
+                # Calculate absolute timestamp
+                timestamp = self.session_start_time.timestamp() + audio_start_time
+            else:
+                # Fallback to current time
+                timestamp = time.time()
+                audio_start_time = None
+                audio_end_time = None
+            
             # Create unique ID for this transcript to prevent duplicates
             transcript_id = f"{timestamp}_{transcript[:50]}"
             
@@ -248,13 +290,16 @@ class HabitLinkSession:
             # Mark as processed
             self.processed_transcript_ids.add(transcript_id)
             
-            # Store final transcript
+            # Store final transcript with timing information
             transcript_item = {
                 "text": transcript,
                 "timestamp": timestamp,
                 "speaker": speaker,
                 "is_final": True,
-                "id": transcript_id
+                "id": transcript_id,
+                "audio_start_time": audio_start_time,  # Relative to stream start
+                "audio_end_time": audio_end_time,  # Relative to stream start
+                "word_timestamps": timing_info.get("word_timestamps", []) if timing_info else []
             }
             self.transcript_buffer.append(transcript_item)
             
@@ -282,19 +327,35 @@ class HabitLinkSession:
     
     async def _analyze_single_transcript(self, transcript_item: Dict):
         """Analyze a single transcript immediately."""
-        # Estimate duration based on word count (assuming ~150 WPM average speaking rate)
+        # Get actual timestamp from transcript
+        transcript_timestamp = transcript_item["timestamp"]
+        
         text = transcript_item["text"]
         word_count = len(text.split())
-        # Estimate duration: word_count / (150 words/min) * 60 sec/min
-        # Min duration: 0.5 seconds, Max duration based on word count
-        estimated_duration = max(0.5, (word_count / 150.0) * 60.0)
         
-        # Convert to segment format
+        # Use actual audio timestamps if available (from STT word-level timestamps)
+        audio_start = transcript_item.get("audio_start_time")
+        audio_end = transcript_item.get("audio_end_time")
+        
+        if audio_start is not None and audio_end is not None and audio_end > audio_start:
+            # Use actual duration from audio timestamps
+            actual_duration = audio_end - audio_start
+            segment_start = transcript_timestamp
+            segment_end = transcript_timestamp + actual_duration
+        else:
+            # Fallback: Estimate duration based on word count (assuming ~150 WPM average speaking rate)
+            # This is less accurate but better than nothing
+            estimated_duration = max(0.5, (word_count / 150.0) * 60.0)
+            segment_start = transcript_timestamp
+            segment_end = transcript_timestamp + estimated_duration
+        
+        # Convert to segment format with proper timestamps
         segment = {
             "text": text,
             "speaker": transcript_item["speaker"],
-            "start": transcript_item["timestamp"],
-            "end": transcript_item["timestamp"] + estimated_duration,
+            "start": segment_start,
+            "end": segment_end,
+            "words": transcript_item.get("word_timestamps", [])  # Include word-level timestamps if available
         }
         
         loop = asyncio.get_running_loop()
@@ -330,6 +391,9 @@ class HabitLinkSession:
                     
                     if task_name == "keywords" and result:
                         for item in result:
+                            # Ensure timestamp is set correctly
+                            if "timestamp" not in item or item["timestamp"] is None:
+                                item["timestamp"] = transcript_item["timestamp"]
                             msg = f"키워드 검출: '{item['keyword']}'"
                             print(f"🔔 {msg}")
                             self.feedback_queue.put(msg)
@@ -339,6 +403,9 @@ class HabitLinkSession:
                     
                     elif task_name == "profanity" and result:
                         for item in result:
+                            # Ensure timestamp is set correctly
+                            if "timestamp" not in item or item["timestamp"] is None:
+                                item["timestamp"] = transcript_item["timestamp"]
                             msg = f"비속어 검출: '{item['keyword']}'"
                             print(f"🔔 {msg}")
                             self.feedback_queue.put(msg)
@@ -347,16 +414,37 @@ class HabitLinkSession:
                             self.all_profanity_detections.append(item)
                     
                     elif task_name == "speech_rate" and result:
+                        # Ensure each result has proper timestamp
+                        for seg in result:
+                            # Use actual timestamps from segment (already set correctly above)
+                            # Recalculate WPM if duration is valid
+                            duration = seg.get("duration", 0)
+                            if duration > 0:
+                                word_count = seg.get("word_count", word_count)
+                                seg["wpm"] = (word_count / duration) * 60
+                                seg["wps"] = word_count / duration
+                            else:
+                                # If duration is 0 or missing, recalculate from start/end
+                                start = seg.get("start", segment_start)
+                                end = seg.get("end", segment_end)
+                                duration = end - start
+                                if duration > 0:
+                                    seg["duration"] = duration
+                                    word_count = seg.get("word_count", word_count)
+                                    seg["wpm"] = (word_count / duration) * 60
+                                    seg["wps"] = word_count / duration
+                            
                         self.all_speech_rate_results.extend(result)
                         for seg in result:
                             comparison = seg.get("comparison")
+                            wpm = seg.get("wpm", 0)
                             if comparison == "too_fast":
-                                msg = f"발화 속도가 빠릅니다: {seg.get('wpm', 0):.0f} WPM"
+                                msg = f"발화 속도가 빠릅니다: {wpm:.0f} WPM"
                                 print(f"🔔 {msg}")
                                 self.feedback_queue.put(msg)
                                 self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
                             elif comparison == "too_slow":
-                                msg = f"발화 속도가 느립니다: {seg.get('wpm', 0):.0f} WPM"
+                                msg = f"발화 속도가 느립니다: {wpm:.0f} WPM"
                                 print(f"🔔 {msg}")
                                 self.feedback_queue.put(msg)
                                 self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
@@ -366,10 +454,17 @@ class HabitLinkSession:
                     import traceback
                     traceback.print_exc()
         
-        # Slow analyses (grammar, context) - run periodically
+        # Slow analyses (grammar, context) - run periodically but more frequently
+        # Reduced from 10 seconds to 5 seconds for faster feedback
         current_time = time.time()
-        if current_time - self.last_analysis_time > 10.0:
-            await self._run_slow_analysis()
+        if current_time - self.last_analysis_time > 5.0:
+            # Run synchronously to ensure completion before session ends
+            try:
+                await self._run_slow_analysis()
+            except Exception as e:
+                print(f"⚠️ Slow analysis error: {e}")
+                import traceback
+                traceback.print_exc()
             self.last_analysis_time = current_time
     
     async def _run_slow_analysis(self):
@@ -399,17 +494,44 @@ class HabitLinkSession:
                 
                 if self.enabled_analyses["grammar"]:
                     grammar_errors = llm_results.get("grammar_errors", [])
-                    self.all_grammar_errors.extend(grammar_errors)  # Store for summary
+                    
+                    # Ensure each error has proper timestamp from its segment
+                    for error in grammar_errors:
+                        if "timestamp" not in error or error["timestamp"] is None:
+                            segment_idx = error.get("segment_index")
+                            if segment_idx is not None and 0 <= segment_idx < len(segments):
+                                error["timestamp"] = segments[segment_idx].get("start", time.time())
+                            else:
+                                error["timestamp"] = time.time()
+                    
+                    self.all_grammar_errors.extend(grammar_errors)
                     if grammar_errors:
                         msg = f"문법 오류 {len(grammar_errors)}개 발견"
+                        print(f"🔔 {msg}")
+                        for i, error in enumerate(grammar_errors, 1):
+                            details = error.get("error_details", {})
+                            print(f"   {i}. '{details.get('original')}' → '{details.get('corrected')}'")
                         self.feedback_queue.put(msg)
                         self.ui_feedback_queue.put({"message": msg, "type": "grammar"})
                 
                 if self.enabled_analyses["context"]:
                     context_errors = llm_results.get("context_errors", [])
-                    self.all_context_errors.extend(context_errors)  # Store for summary
+                    
+                    # Ensure each error has proper timestamp from its segment
+                    for error in context_errors:
+                        if "timestamp" not in error or error["timestamp"] is None:
+                            segment_idx = error.get("segment_index")
+                            if segment_idx is not None and 0 <= segment_idx < len(segments):
+                                error["timestamp"] = segments[segment_idx].get("start", time.time())
+                            else:
+                                error["timestamp"] = time.time()
+                    
+                    self.all_context_errors.extend(context_errors)
                     if context_errors:
                         msg = f"맥락 오류 {len(context_errors)}개 발견"
+                        print(f"🔔 {msg}")
+                        for i, error in enumerate(context_errors, 1):
+                            print(f"   {i}. '{error.get('utterance')}' - {error.get('reasoning')}")
                         self.feedback_queue.put(msg)
                         self.ui_feedback_queue.put({"message": msg, "type": "context"})
             

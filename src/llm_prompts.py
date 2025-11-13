@@ -6,10 +6,21 @@ Task: Analyze the full provided transcript of a Korean speech or conversation. T
 **Core Instructions:**
 1.  **Analyze the Entire Transcript**: Review the full text to understand the overall context before identifying specific errors.
 2.  **Identify Grammatical Errors**:
-    -   Focus on clear mistakes: Incorrect particles (조사), verb conjugations, awkward phrasing that hurts clarity.
-    -   Respect spoken language: Do not flag stylistic choices common in conversation as errors.
+    -   **Focus on spoken Korean grammar mistakes that affect meaning or clarity:**
+        -   Incorrect particles (조사) - e.g., "을/를" vs "이/가" confusion
+        -   Incorrect verb conjugations (어미 활용 오류) - e.g., "빌어서" instead of "빌려서"
+        -   Incorrect honorifics or speech levels that don't match context
+        -   Word order issues that confuse meaning
+        -   Clear grammatical mistakes in spoken form
+    -   **DO NOT flag these as errors:**
+        -   Spacing/punctuation (띄어쓰기, 쉼표, 온점) - these are transcription artifacts
+        -   Casual/informal expressions common in conversation (e.g., "되게", "완전")
+        -   Filler words or incomplete sentences typical in natural speech
+        -   Dialect or regional variations
+    -   **Be reasonable**: Flag errors that would be corrected in language learning, not every informal usage.
 3.  **Identify Contextual Errors**:
     -   An error is a statement that is logically inconsistent with previous statements, or an abrupt, unexplained topic shift that breaks the conversational flow.
+    -   Look for contradictions or sudden topic changes without transition.
 
 Input: A full transcript as a single string, with each utterance prefixed by an index like `[i]`.
 
@@ -20,11 +31,11 @@ Output Instruction:
     - `index` (integer): The index of the line where the error occurred.
     - `original` (string): The exact incorrect phrase from the transcript.
     - `corrected` (string): The suggested correction.
-    - `explanation` (string): A brief reason for the change.
+    - `explanation` (string): A brief reason for the change. **MUST be written in Korean (한국어).**
 - **"context_errors"**: An array of objects. Each object must have:
     - `index` (integer): The index of the line where the error occurred.
     - `utterance` (string): The exact utterance that is contextually problematic.
-    - `reasoning` (string): A concise explanation of why it's a contextual error.
+    - `reasoning` (string): A concise explanation of why it's a contextual error. **MUST be written in Korean (한국어).**
 - If no errors of a certain type are found, the corresponding array **MUST** be empty (`[]`).
 
 Example Input:

@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 from groq import AsyncGroq
 from typing import List, Dict, Any
 from .llm_prompts import COMPREHENSIVE_TEXT_ANALYSIS_PROMPT
@@ -57,6 +56,7 @@ class TextAnalyzer:
                     final_results["grammar_errors"].append({
                         "speaker": segment.get("speaker", "UNKNOWN"),
                         "timestamp": segment.get("start", 0),
+                        "segment_index": idx,  # Store index for reference
                         "error_details": error
                     })
 
@@ -67,6 +67,7 @@ class TextAnalyzer:
                     final_results["context_errors"].append({
                         "speaker": segment.get("speaker", "UNKNOWN"),
                         "timestamp": segment.get("start", 0),
+                        "segment_index": idx,  # Store index for reference
                         "utterance": error.get("utterance"),
                         "reasoning": error.get("reasoning")
                     })

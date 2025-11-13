@@ -1,15 +1,7 @@
 import os
-import logging
 from dotenv import load_dotenv
 
 from src.session import HabitLinkSession
-
-# Suppress library warnings
-logging.getLogger('pyannote').setLevel(logging.WARNING)
-logging.getLogger('torchaudio').setLevel(logging.ERROR)
-logging.getLogger('speechbrain').setLevel(logging.ERROR)
-os.environ["PYTORCH_SUPPRESS_DEPRECATION_WARNINGS"] = "1"
-os.environ["PL_SUPPRESS_FORK"] = "1"
 
 
 def check_environment() -> bool:

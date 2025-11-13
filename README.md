@@ -1,32 +1,32 @@
 # HabitLink: AI-Powered Korean Speech Habit Correction System
 
-> A real-time analysis and feedback system designed to help Korean speakers recognize and correct their speech habits. This project provides immediate feedback and detailed post-analysis reports to improve communication skills.
+> A real-time analysis and feedback system designed to help Korean speakers recognize and correct their speech habits with immediate visual feedback and detailed post-session reports.
 
 ---
 
 ## 🎯 Project Goals
 
-It can be challenging for people to perceive and fix their own speech habits, such as using filler words, speaking too quickly, or making grammatical errors. HabitLink aims to solve this by providing a comprehensive analysis and feedback system specifically for the **Korean language**.
+HabitLink provides comprehensive speech analysis to help Korean speakers improve their communication skills by identifying and correcting speech habits that are difficult to self-monitor.
 
 Our main goals are:
-- **Comprehensive Analysis**: To analyze key indicators in real-time, including speech rate, filler words, and grammatical errors.
-- **Dual Feedback System**: To offer both real-time corrective feedback and long-term learning motivation through post-session reports.
-- **Modular Architecture**: To build the system with a microservices-based approach for scalability and maintainability.
-- **Versatile Dashboard**: To provide a user-friendly dashboard for users to track their progress.
+- **Real-time Analysis**: Analyze speech habits as you speak with immediate visual feedback
+- **Comprehensive Feedback**: Track speech rate, keywords, profanity, grammar, context, and stuttering
+- **Visual UI**: Interactive Pygame-based visualization with audio waveforms and alerts
+- **Detailed Reports**: Generate PDF reports after each session for long-term progress tracking
 
 ---
 
-## ✨ Key Features (MVP)
+## ✨ Current Features
 
-The current development is focused on delivering a Minimum Viable Product (MVP) with the following core features:
-
-- **🎤 Real-time Audio Transcription**: Captures microphone input and transcribes Korean speech into text in real-time.
-- **🚀 Speech Rate (WPM) Analysis**: Measures Words Per Minute to provide feedback on speaking pace.
-- **🔎 Custom Keyword Detection**: Counts the frequency of user-defined keywords, such as filler words or profanity.
-- **🤖 LLM-based Grammar Check**: Leverages a Large Language Model (LLM) to detect grammatical errors and suggest corrections.
-- **🗣️ Dialect Analysis (PoC)**: Identifies the speaker's dialect (e.g., Seoul, Gyeongsang) by fine-tuning a `Wav2Vec2` model.
-- **🧠 Contextual Appropriateness Analysis**: Evaluates if the latest utterance fits the context of the recent conversation flow using an LLM.
-- **🖥️ Web Dashboard**: A web-based interface built with Streamlit for easy prototyping, allowing users to control sessions and view real-time analysis and post-session summaries.
+- **🎤 Real-time Speech-to-Text**: Google Cloud STT with websocket streaming and automatic reconnection
+- **🎨 Interactive UI**: Pygame-based 3D sphere that responds to voice input with real-time waveforms
+- **🚀 Speech Rate Analysis**: Measures Words Per Minute with customizable target speeds
+- **🔎 Custom Keyword Detection**: Track specific filler words or repetitive phrases
+- **⚠️ Profanity Detection**: Real-time detection of inappropriate language
+- **🤖 Grammar Analysis**: LLM-powered detection of spoken grammar errors
+- **🧠 Context Analysis**: Evaluates contextual appropriateness of utterances
+- **🗣️ Stutter Analysis**: Dual-mode detection using both real-time audio and post-processing
+- **📄 PDF Reports**: Comprehensive post-session reports with detailed analytics
 
 ---
 
@@ -34,104 +34,176 @@ The current development is focused on delivering a Minimum Viable Product (MVP) 
 
 | Category      | Technology                                                                          |
 |---------------|-------------------------------------------------------------------------------------|
-| **Backend**   | Python, FastAPI                                                                     |
-| **Frontend**  | Streamlit (for MVP)                                                                 |
-| **AI / ML**   | WhisperLiveKit (for real-time STT), OpenAI API (GPT)                                |
-| **Database**  | SQLite                                                                              |
+| **STT**       | Google Cloud Speech-to-Text (Streaming API)                                        |
+| **LLM**       | Groq API (for grammar and context analysis)                                         |
+| **Audio**     | PyAudio, SoundDevice, Librosa                                                      |
+| **UI**        | Pygame                                                                              |
+| **Reports**   | ReportLab                                                                           |
+| **Language**  | Python 3.11+                                                                        |
 
 ---
 
-## 🏛️ System Architecture (Conceptual)
+## 🏛️ System Architecture
 
-HabitLink is designed with a modular, microservices-oriented architecture.
+HabitLink uses a multi-threaded streaming architecture:
 
-1.  **Voice Pre-processing Module**: Captures the user's voice and streams it to a local `WhisperLiveKit` server for real-time speech-to-text conversion. The original audio is processed in memory and not permanently stored, ensuring privacy.
-2.  **Analysis Loop Module**: The core engine that analyzes the transcribed text for the target indicators (Speech Rate, Filler Words, Grammar).
-3.  **Feedback Module**: Delivers feedback based on the analysis, primarily through the web dashboard in the MVP.
-4.  **User Interface (UI)**: A web dashboard that allows users to start/stop analysis sessions, configure settings, and view results.
+1. **Streaming STT Module**: Captures microphone input and streams to Google Cloud STT with automatic reconnection
+2. **Real-time Analysis**: Fast analyses (keywords, profanity, speech rate) run immediately on each transcript
+3. **LLM Analysis**: Grammar and context analysis runs periodically (every 5 seconds)
+4. **UI Visualizer**: Pygame-based main thread displays real-time audio visualization
+5. **Audio-based Stutter Detection**: Analyzes raw audio for stuttering patterns independently of STT
+6. **Report Generator**: Creates comprehensive PDF reports after each session
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Python 3.8+
-- [FFmpeg](https://ffmpeg.org/download.html)
-- An external API key for LLM (e.g., OpenAI).
+- Python 3.11+
+- Google Cloud Account with Speech-to-Text API enabled
+- Groq API Key
+- macOS/Linux/Windows (UI works best on macOS)
 
 ### Installation & Setup
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/HabitLink.git
-    cd HabitLink
-    ```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/your-username/HabitLink.git
+   cd HabitLink
+   ```
 
-2.  **Create a virtual environment and activate it:**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    ```
+2. **Create a virtual environment and activate it:**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+   ```
 
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    # This will include whisperlivekit
-    ```
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-4.  **Set up environment variables:**
-    Create a `.env` file in the root directory and add your API key:
-    ```
-    OPENAI_API_KEY="your_openai_api_key"
-    ```
+4. **Set up Google Cloud credentials:**
+   - Download your service account JSON key from Google Cloud Console
+   - Save it as `gcp_credentials.json` in the project root, or
+   - Set `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+
+5. **Set up environment variables:**
+   Create a `.env` file in the root directory:
+   ```
+   GROQ_API_KEY="your_groq_api_key"
+   GOOGLE_APPLICATION_CREDENTIALS="path/to/gcp_credentials.json"
+   ```
+
+6. **Prepare profanity list:**
+   - Create `.data/profanity_list_ko.txt` with Korean profanity words (one per line)
 
 ### Running the Application
 
-This application consists of two main parts: the `WhisperLiveKit` STT server and the HabitLink analysis application.
+```bash
+python main.py
+```
 
-1.  **Start the WhisperLiveKit server:**
-    (You might run this in a separate terminal)
-    ```bash
-    whisperlivekit --model small --language ko
-    ```
+The application will:
+1. Ask if you want to enable UI visualization (recommended)
+2. Let you select which analysis modules to activate
+3. If speech rate analysis is selected, record a calibration sample
+4. Start real-time analysis with visual feedback
+5. Generate a PDF report when you close the session
 
-2.  **Start the backend server:**
-    ```bash
-    uvicorn main:app --reload 
-    ```
-
-3.  **Run the frontend application:**
-    (Assuming the Streamlit app is in a file named `app.py`)
-    ```bash
-    streamlit run app.py
-    ```
 ---
 
-## 🗺️ Project Roadmap
+## 📊 Analysis Modules
 
-This project is currently under active development with a defined 2-month MVP plan. For a detailed week-by-week breakdown, please see the [ActionPlan.md](./ActionPlan.md) file.
+### 1. Keyword Detection
+Track specific words or phrases you want to monitor (e.g., filler words like "이제", "근데").
 
-- **Phase 1 (September 2025):** Core backend development, including STT/LLM integration and the implementation of core analysis modules.
-- **Phase 2 (October 2025):** Development of the Streamlit web UI, integration of advanced analysis modules (Dialect, Context), and final end-to-end testing.
+### 2. Profanity Detection
+Automatically detect inappropriate language from a customizable list.
+
+### 3. Speech Rate Analysis
+Measures speaking speed in Words Per Minute (WPM) with personalized target rates.
+
+### 4. Grammar Analysis
+Uses LLM to detect spoken Korean grammar errors (particles, conjugations, honorifics, word order).
+
+### 5. Context Analysis
+Evaluates if utterances fit the conversational context and flow.
+
+### 6. Stutter Analysis
+Dual-mode detection:
+- **Real-time**: Audio-based detection using MFCC, ZCR, and RMS energy
+- **Post-processing**: Text-based pattern matching for repetitions, prolongations, and blocks
+
+---
+
+## 🎨 UI Features
+
+The Pygame UI displays:
+- **3D Blue Sphere**: Size changes with voice volume
+- **Real-time Waveform**: Shows audio input on the sphere's surface
+- **Color Alerts**: Sphere turns light green when issues are detected
+- **Notification Messages**: Top-right corner displays detection alerts
+
+---
+
+## 📄 PDF Reports
+
+After each session, HabitLink generates a comprehensive PDF report containing:
+- Full transcript with timestamps
+- Keyword detection summary and occurrences
+- Profanity detection results
+- Speech rate analysis with segment-by-segment breakdown
+- Grammar errors with corrections and explanations
+- Context errors with reasoning
+- Stutter analysis (both real-time and text-based)
+
+Reports are saved to `.data/report/habitlink_report_YYYYMMDD_HHMMSS.pdf`
+
+---
+
+## 🗺️ Project Status
+
+**Current Version**: v1.0 (MVP Complete)
+
+### Completed Features
+- ✅ Real-time Google Cloud STT streaming with reconnection
+- ✅ Interactive Pygame UI with audio visualization
+- ✅ All 6 analysis modules functional
+- ✅ PDF report generation with Korean font support
+- ✅ Multi-threaded architecture for responsiveness
+- ✅ Comprehensive error handling
 
 ### Future Goals
-- [ ] Mobile & Wearable application with real-time haptic feedback.
-- [ ] Comprehensive clinical reporting features for professionals (VLPs).
+- [ ] Web dashboard for progress tracking
+- [ ] User authentication and session history
+- [ ] Advanced analytics and trends
+- [ ] Mobile application support
+- [ ] Multi-language support
 
 ---
 
 ## 🤝 How to Contribute
 
-We welcome contributions to the HabitLink project! Please follow these steps:
+We welcome contributions! Please follow these steps:
 
-1.  **Fork** the repository.
-2.  Create a new **branch** (`git checkout -b feature/YourFeature`).
-3.  **Commit** your changes (`git commit -m 'Add some feature'`).
-4.  **Push** to the branch (`git push origin feature/YourFeature`).
-5.  Open a **Pull Request**.
+1. **Fork** the repository
+2. Create a new **branch** (`git checkout -b feature/YourFeature`)
+3. **Commit** your changes (`git commit -m 'Add some feature'`)
+4. **Push** to the branch (`git push origin feature/YourFeature`)
+5. Open a **Pull Request**
 
 ---
 
 ## 📄 License
 
 This project is licensed under the KAIST License. See the `LICENSE` file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- Google Cloud Speech-to-Text for reliable STT
+- Groq for fast LLM inference
+- PyGame community for visualization tools
+- ReportLab for PDF generation
