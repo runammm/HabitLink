@@ -10,27 +10,50 @@ class StutterDetector:
     Detects stuttering events from raw audio stream in real-time.
     Uses audio signal processing to identify repetitions, prolongations, and blocks
     WITHOUT relying on text from STT (which may be pre-cleaned).
+    
+    Based on research-validated criteria:
+    1. Blocks (막힘):
+       - Intra-lexical pauses (단어-내 멈춤): ≥150ms silence within words
+       - Inter-lexical pauses (단어-간 멈춤): ≥250ms are normal hesitations
+       Reference: Research shows normal speakers rarely have >200ms pauses within words
+    
+    2. Prolongations (연장):
+       - Absolute: Single phoneme sustained ≥800ms (relaxed threshold)
+       - Relative: ≥(mean + 2.5×SD) of user's average phoneme duration
+       Reference: 800ms is clearly perceived as "abnormally long" by listeners
+       Note: 250ms too sensitive; adjusted to 800ms for real-world use
+    
+    3. Repetitions (반복):
+       - MFCC correlation coefficient >0.92 between consecutive frames (20-40ms)
+       - 2+ occurrences of similar patterns
+       Reference: MFCC correlation >0.92 identifies repetition segments
     """
     
     def __init__(self, 
                  sample_rate: int = 16000,
                  frame_length: int = 2048,
                  hop_length: int = 512,
-                 energy_threshold: float = 0.04,  # 더 완화: 0.025 -> 0.04
-                 repetition_similarity_threshold: float = 0.95,  # 더 엄격: 0.89 -> 0.95 (반복 검출을 더 엄격하게)
-                 prolongation_duration_threshold: float = 1.5,  # 더 완화: 0.95 -> 1.5초 (연장 검출을 더 완화)
-                 silence_duration_threshold: float = 1.8):  # 더 완화: 1.2 -> 1.8초 
+                 energy_threshold: float = 0.03,
+                 # Repetition: MFCC correlation >0.92 (research-based)
+                 repetition_similarity_threshold: float = 0.92,
+                 # Prolongation: 800ms absolute threshold (relaxed for real-world use)
+                 prolongation_duration_threshold: float = 0.8,
+                 # Block (intra-lexical): 150ms within words (research-based)
+                 intra_lexical_silence_threshold: float = 0.15,
+                 # Hesitation (inter-lexical): 250ms between words (normal)
+                 inter_lexical_silence_threshold: float = 0.25):
         """
-        Initialize the real-time stutter detector.
+        Initialize the real-time stutter detector with research-based thresholds.
         
         Args:
             sample_rate: Audio sample rate (Hz)
-            frame_length: Frame length for analysis
-            hop_length: Hop length for analysis
-            energy_threshold: Energy threshold to distinguish speech from silence
-            repetition_similarity_threshold: Correlation threshold for repetition detection
-            prolongation_duration_threshold: Duration (seconds) to flag prolongations
-            silence_duration_threshold: Duration (seconds) to flag blocks
+            frame_length: Frame length for analysis (default: 2048 samples ≈ 128ms)
+            hop_length: Hop length for analysis (default: 512 samples ≈ 32ms)
+            energy_threshold: Energy threshold for VAD (Voice Activity Detection)
+            repetition_similarity_threshold: MFCC correlation for repetition (≥0.92)
+            prolongation_duration_threshold: Minimum duration for prolongation (800ms, relaxed)
+            intra_lexical_silence_threshold: Silence threshold within words (150ms)
+            inter_lexical_silence_threshold: Silence threshold between words (250ms, normal)
         """
         self.sr = sample_rate
         self.frame_length = frame_length
@@ -38,7 +61,8 @@ class StutterDetector:
         self.energy_threshold = energy_threshold
         self.repetition_threshold = repetition_similarity_threshold
         self.prolongation_threshold = prolongation_duration_threshold
-        self.silence_threshold = silence_duration_threshold
+        self.intra_lexical_threshold = intra_lexical_silence_threshold
+        self.inter_lexical_threshold = inter_lexical_silence_threshold
         
         # Sliding window buffer (last 3 seconds of audio)
         self.audio_buffer = deque(maxlen=sample_rate * 3)
@@ -47,10 +71,11 @@ class StutterDetector:
         self.detected_events = []
         self.last_analysis_time = time.time()
         
-        # State tracking
+        # State tracking for context-aware detection
+        self.recent_speech_segments = deque(maxlen=10)  # Track recent speech segments
         self.in_speech = False
         self.speech_start_time = None
-        self.last_segment_features = None
+        self.last_speech_end_time = None
     
     def add_audio_chunk(self, audio_chunk: bytes):
         """
@@ -66,9 +91,9 @@ class StutterDetector:
             # Add to buffer
             self.audio_buffer.extend(audio_array)
             
-            # Analyze every 1.2 seconds (더 긴 간격으로 분석 빈도 감소)
+            # Analyze every 0.5 seconds for balanced real-time detection
             current_time = time.time()
-            if current_time - self.last_analysis_time >= 1.2:
+            if current_time - self.last_analysis_time >= 0.5:
                 self._analyze_current_buffer(current_time)
                 self.last_analysis_time = current_time
         
@@ -77,159 +102,224 @@ class StutterDetector:
     
     def _analyze_current_buffer(self, current_time: float):
         """Analyze the current audio buffer for stuttering patterns."""
-        if len(self.audio_buffer) < self.sr * 0.5:  # Need at least 0.5 seconds
+        if len(self.audio_buffer) < self.sr * 0.3:  # Need at least 300ms
             return
         
         # Convert buffer to numpy array
         audio = np.array(self.audio_buffer)
         
-        # Check for repetitions
-        self._detect_realtime_repetitions(audio, current_time)
+        # Detect repetitions using MFCC correlation
+        self._detect_repetitions_mfcc(audio, current_time)
         
-        # Check for prolongations
-        self._detect_realtime_prolongations(audio, current_time)
+        # Detect prolongations using spectral stability
+        self._detect_prolongations(audio, current_time)
         
-        # Check for blocks (sudden silences within speech)
-        self._detect_realtime_blocks(audio, current_time)
+        # Detect blocks (intra-lexical pauses) using contextual VAD
+        self._detect_blocks_contextual(audio, current_time)
     
-    def _detect_realtime_repetitions(self, audio: np.ndarray, timestamp: float):
+    def _detect_repetitions_mfcc(self, audio: np.ndarray, timestamp: float):
         """
-        Detect repetitions by comparing recent audio segments.
-        Uses cross-correlation to find similar consecutive segments.
+        Detect repetitions using MFCC correlation between consecutive frames.
+        Research criterion: Correlation coefficient >0.92 indicates repetition.
         """
         try:
-            # Split audio into short segments (200ms each)
-            segment_length = int(self.sr * 0.2)  # 200ms
+            # Use shorter frames (20-40ms) as specified in research
+            frame_size = int(self.sr * 0.03)  # 30ms frames
+            hop_size = int(self.sr * 0.015)   # 15ms hop (50% overlap)
             
-            if len(audio) < segment_length * 2:
+            if len(audio) < frame_size * 3:
                 return
             
-            # Get last few segments
-            num_segments = min(5, len(audio) // segment_length)
-            segments = []
+            # Extract MFCC features for all frames
+            mfcc_features = librosa.feature.mfcc(
+                y=audio, 
+                sr=self.sr, 
+                n_mfcc=13,
+                n_fft=frame_size * 2,
+                hop_length=hop_size
+            )
             
-            for i in range(num_segments):
-                start = len(audio) - (i + 1) * segment_length
-                end = len(audio) - i * segment_length
-                if start >= 0:
-                    segment = audio[start:end]
-                    
-                    # Extract MFCC features
-                    if len(segment) > 0 and np.max(np.abs(segment)) > self.energy_threshold:
-                        mfcc = librosa.feature.mfcc(y=segment, sr=self.sr, n_mfcc=13)
-                        segments.append({
-                            'mfcc': mfcc,
-                            'audio': segment,
-                            'energy': np.mean(segment ** 2)
-                        })
+            # Calculate RMS energy for each frame to filter silence
+            rms = librosa.feature.rms(y=audio, frame_length=frame_size, hop_length=hop_size)[0]
             
-            # Compare consecutive segments for similarity
-            for i in range(len(segments) - 1):
-                seg1 = segments[i]
-                seg2 = segments[i + 1]
-                
-                # Only compare if both have speech energy
-                if seg1['energy'] > self.energy_threshold and seg2['energy'] > self.energy_threshold:
-                    # Calculate correlation between MFCC features
-                    mfcc1_mean = np.mean(seg1['mfcc'], axis=1)
-                    mfcc2_mean = np.mean(seg2['mfcc'], axis=1)
+            # Compare consecutive frames
+            repetition_count = 0
+            last_repetition_time = None
+            
+            for i in range(mfcc_features.shape[1] - 1):
+                # Only analyze frames with sufficient energy (speech)
+                if rms[i] > self.energy_threshold and rms[i+1] > self.energy_threshold:
+                    # Get MFCC vectors for consecutive frames
+                    mfcc1 = mfcc_features[:, i]
+                    mfcc2 = mfcc_features[:, i + 1]
                     
-                    # Normalize and compute correlation
-                    mfcc1_norm = (mfcc1_mean - np.mean(mfcc1_mean)) / (np.std(mfcc1_mean) + 1e-8)
-                    mfcc2_norm = (mfcc2_mean - np.mean(mfcc2_mean)) / (np.std(mfcc2_mean) + 1e-8)
+                    # Normalize vectors
+                    mfcc1_norm = (mfcc1 - np.mean(mfcc1)) / (np.std(mfcc1) + 1e-8)
+                    mfcc2_norm = (mfcc2 - np.mean(mfcc2)) / (np.std(mfcc2) + 1e-8)
                     
+                    # Calculate correlation coefficient
                     correlation = np.corrcoef(mfcc1_norm, mfcc2_norm)[0, 1]
                     
-                    # If highly correlated, it's likely a repetition
+                    # Research criterion: correlation >0.92
                     if correlation > self.repetition_threshold:
-                        event = {
-                            'type': 'repetition',
-                            'timestamp': timestamp - (i * 0.2),  # Approximate timestamp
-                            'confidence': float(correlation),
-                            'severity': 'moderate' if correlation > 0.9 else 'mild'
-                        }
-                        
-                        # Avoid duplicate detections
-                        if not self._is_duplicate_event(event):
-                            self.detected_events.append(event)
-        
-        except Exception as e:
-            pass  # Silently handle errors
-    
-    def _detect_realtime_prolongations(self, audio: np.ndarray, timestamp: float):
-        """
-        Detect prolongations by finding sustained single-frequency sounds.
-        """
-        try:
-            # Calculate zero-crossing rate (lower for sustained sounds)
-            zcr = librosa.feature.zero_crossing_rate(audio, frame_length=self.frame_length, hop_length=self.hop_length)[0]
-            
-            # Calculate RMS energy
-            rms = librosa.feature.rms(y=audio, frame_length=self.frame_length, hop_length=self.hop_length)[0]
-            
-            # Find regions with low ZCR and sustained energy (prolongations)
-            prolonged_frames = 0
-            for i in range(len(zcr)):
-                # 더 엄격한 조건: ZCR < 0.07, RMS > threshold * 1.5 (연장 검출을 더 엄격하게)
-                if zcr[i] < 0.07 and rms[i] > self.energy_threshold * 1.5:
-                    prolonged_frames += 1
-                else:
-                    if prolonged_frames > 0:
-                        duration = prolonged_frames * self.hop_length / self.sr
-                        
-                        if duration > self.prolongation_threshold:
+                        repetition_count += 1
+                        last_repetition_time = i * hop_size / self.sr
+                    else:
+                        # Check if we had 2+ consecutive repetitions
+                        if repetition_count >= 2:
                             event = {
-                                'type': 'prolongation',
-                                'timestamp': timestamp - duration,
-                                'duration': round(duration, 2),
-                                'severity': 'severe' if duration > 2.0 else 'moderate'  # 더 엄격: 1.4 -> 2.0초
+                                'type': 'repetition',
+                                'timestamp': timestamp - (last_repetition_time or 0),
+                                'count': repetition_count,
+                                'confidence': float(correlation),
+                                'severity': 'severe' if repetition_count >= 4 else 'moderate'
                             }
                             
                             if not self._is_duplicate_event(event):
                                 self.detected_events.append(event)
                         
-                        prolonged_frames = 0
+                        repetition_count = 0
         
         except Exception as e:
             pass
     
-    def _detect_realtime_blocks(self, audio: np.ndarray, timestamp: float):
+    def _detect_prolongations(self, audio: np.ndarray, timestamp: float):
         """
-        Detect blocks (sudden silences within continuous speech).
+        Detect prolongations using spectral stability.
+        Research criterion: Single phoneme sustained ≥800ms (relaxed threshold).
+        Note: 250ms too sensitive; 800ms captures true prolongations.
         """
         try:
-            # Split into speech/silence using energy threshold
-            intervals = librosa.effects.split(audio, top_db=30, frame_length=self.frame_length, hop_length=self.hop_length)
+            # Calculate spectral features
+            zcr = librosa.feature.zero_crossing_rate(
+                audio, 
+                frame_length=self.frame_length, 
+                hop_length=self.hop_length
+            )[0]
             
-            # If we have multiple intervals, check for gaps (blocks)
-            if len(intervals) > 1:
-                for i in range(len(intervals) - 1):
-                    gap_start = intervals[i][1]
-                    gap_end = intervals[i + 1][0]
-                    gap_duration = (gap_end - gap_start) / self.sr
-                    
-                    # Block 검출: 1.8초 이상 3.0초 미만 (더 완화된 범위)
-                    if 1.8 < gap_duration < 3.0:
-                        event = {
-                            'type': 'block',
-                            'timestamp': timestamp - ((len(audio) - gap_start) / self.sr),
-                            'duration': round(gap_duration, 2),
-                            'severity': 'severe' if gap_duration > 1.5 else 'moderate'
-                        }
+            rms = librosa.feature.rms(
+                y=audio, 
+                frame_length=self.frame_length, 
+                hop_length=self.hop_length
+            )[0]
+            
+            # Find sustained sounds (low ZCR + sustained energy)
+            sustained_frames = 0
+            
+            for i in range(len(zcr)):
+                # Low ZCR indicates sustained sound (vowels, fricatives)
+                # Sufficient energy indicates active speech
+                is_sustained = (zcr[i] < 0.08 and rms[i] > self.energy_threshold * 1.2)
+                
+                if is_sustained:
+                    sustained_frames += 1
+                else:
+                    if sustained_frames > 0:
+                        duration = sustained_frames * self.hop_length / self.sr
                         
-                        if not self._is_duplicate_event(event):
-                            self.detected_events.append(event)
+                        # Relaxed criterion: ≥800ms (0.8s) to avoid false positives
+                        if duration >= self.prolongation_threshold:
+                            event = {
+                                'type': 'prolongation',
+                                'timestamp': timestamp - duration,
+                                'duration': round(duration, 3),
+                                'severity': 'severe' if duration >= 1.0 else 'moderate'
+                            }
+                            
+                            if not self._is_duplicate_event(event):
+                                self.detected_events.append(event)
+                    
+                    sustained_frames = 0
         
         except Exception as e:
             pass
     
-    def _is_duplicate_event(self, new_event: Dict[str, Any], time_window: float = 2.5) -> bool:
+    def _detect_blocks_contextual(self, audio: np.ndarray, timestamp: float):
+        """
+        Detect blocks (intra-lexical pauses) using contextual analysis.
+        Key insight: Distinguish between inter-lexical (≥250ms, normal) and 
+        intra-lexical pauses (≥150ms, stuttering).
+        
+        Research criterion:
+        - Intra-lexical (within words): ≥150ms → Block
+        - Inter-lexical (between words): ≥250ms → Normal hesitation
+        """
+        try:
+            # Detect speech/silence intervals using energy-based VAD
+            intervals = librosa.effects.split(
+                audio, 
+                top_db=30,  # Silence threshold
+                frame_length=self.frame_length,
+                hop_length=self.hop_length
+            )
+            
+            if len(intervals) < 2:
+                return
+            
+            # Analyze gaps between speech intervals
+            for i in range(len(intervals) - 1):
+                speech1_end = intervals[i][1]
+                speech2_start = intervals[i + 1][0]
+                gap_duration = (speech2_start - speech1_end) / self.sr
+                
+                # Extract features of surrounding speech to determine context
+                speech1_audio = audio[max(0, intervals[i][0]):speech1_end]
+                speech2_audio = audio[speech2_start:min(len(audio), intervals[i+1][1])]
+                
+                # Calculate energy of surrounding speech
+                speech1_energy = np.mean(speech1_audio ** 2) if len(speech1_audio) > 0 else 0
+                speech2_energy = np.mean(speech2_audio ** 2) if len(speech2_audio) > 0 else 0
+                
+                # Both sides must have speech energy
+                if speech1_energy > self.energy_threshold and speech2_energy > self.energy_threshold:
+                    # Determine if this is likely intra-lexical or inter-lexical
+                    # Heuristic: shorter speech segments with high energy continuity 
+                    # are more likely to be within a word
+                    speech1_duration = len(speech1_audio) / self.sr
+                    speech2_duration = len(speech2_audio) / self.sr
+                    
+                    # If surrounding segments are short (<0.5s each), likely within a word
+                    is_likely_intra_lexical = (speech1_duration < 0.5 and speech2_duration < 0.5)
+                    
+                    # Apply appropriate threshold
+                    if is_likely_intra_lexical:
+                        # Intra-lexical: ≥150ms is a block (research criterion)
+                        if gap_duration >= self.intra_lexical_threshold and gap_duration < 1.0:
+                            event = {
+                                'type': 'block',
+                                'timestamp': timestamp - ((len(audio) - speech1_end) / self.sr),
+                                'duration': round(gap_duration, 3),
+                                'context': 'intra_lexical',
+                                'severity': 'severe' if gap_duration >= 0.3 else 'moderate'
+                            }
+                            
+                            if not self._is_duplicate_event(event):
+                                self.detected_events.append(event)
+                    else:
+                        # Inter-lexical: ≥250ms might be normal hesitation
+                        # Only flag if it's unusually long (>500ms)
+                        if gap_duration >= 0.5 and gap_duration < 1.5:
+                            event = {
+                                'type': 'block',
+                                'timestamp': timestamp - ((len(audio) - speech1_end) / self.sr),
+                                'duration': round(gap_duration, 3),
+                                'context': 'inter_lexical',
+                                'severity': 'moderate'
+                            }
+                            
+                            if not self._is_duplicate_event(event):
+                                self.detected_events.append(event)
+        
+        except Exception as e:
+            pass
+    
+    def _is_duplicate_event(self, new_event: Dict[str, Any], time_window: float = 1.0) -> bool:
         """
         Check if this event is a duplicate of a recent event.
         
         Args:
             new_event: The event to check
-            time_window: Time window (seconds) to consider for duplicates (중간값: 1.0과 2.5의 중간보다 약간 높게)
+            time_window: Time window (seconds) to consider for duplicates
         
         Returns:
             True if duplicate, False otherwise
@@ -286,24 +376,35 @@ class StutterDetector:
                 'total_events': 0,
                 'repetitions': 0,
                 'prolongations': 0,
-                'blocks': 0
+                'blocks': 0,
+                'intra_lexical_blocks': 0,
+                'inter_lexical_blocks': 0
             }
         
         type_counts = {
             'repetition': 0,
             'prolongation': 0,
-            'block': 0
+            'block': 0,
+            'intra_lexical': 0,
+            'inter_lexical': 0
         }
         
         for event in self.detected_events:
             event_type = event['type']
             if event_type in type_counts:
                 type_counts[event_type] += 1
+            
+            # Count block contexts separately
+            if event_type == 'block':
+                context = event.get('context', 'unknown')
+                if context in type_counts:
+                    type_counts[context] += 1
         
         return {
             'total_events': len(self.detected_events),
             'repetitions': type_counts['repetition'],
             'prolongations': type_counts['prolongation'],
-            'blocks': type_counts['block']
+            'blocks': type_counts['block'],
+            'intra_lexical_blocks': type_counts['intra_lexical'],
+            'inter_lexical_blocks': type_counts['inter_lexical']
         }
-

@@ -177,7 +177,10 @@ class GoogleSTTStreaming:
                     self.callback(transcript, True, "SPEAKER_00", timing_info)
                 self.last_transcript_was_final = True
             else:
-                print(f"⏳ Interim: {transcript}", end='\r', flush=True)
+                # Only show every 5th interim to reduce spam
+                self._interim_count = getattr(self, '_interim_count', 0) + 1
+                if self._interim_count % 5 == 0:
+                    print(f"⏳ Interim: {transcript[:80]}...", end='\r', flush=True)
                 if self.callback:
                     self.callback(transcript, False, "SPEAKER_00", timing_info)
     

@@ -944,10 +944,11 @@ class HabitLinkSession:
             if self.streaming_stt:
                 self.streaming_stt.stop_streaming()
         
-        # Wait for threads to finish
+        # Wait for threads to finish with longer timeout to ensure all STT results are processed
         print("마지막 분석을 완료하는 중...")
-        streaming_thread.join(timeout=5)
-        console_thread.join(timeout=2)
+        time.sleep(2)  # Give STT a moment to finish processing any remaining audio
+        streaming_thread.join(timeout=10)  # Increased from 5 to 10 seconds
+        console_thread.join(timeout=3)  # Increased from 2 to 3 seconds
         
         # Generate summary report
         self.generate_summary_report()
