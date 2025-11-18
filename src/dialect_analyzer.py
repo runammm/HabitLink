@@ -1,7 +1,8 @@
 """
 Dialect Analyzer Module
 
-This module uses a fine-tuned Wav2Vec2 model to detect Korean dialects from audio.
+This module uses a fine-tuned Wav2Vec2 model for binary classification:
+- Standard Korean (표준어) vs Non-Standard Korean (비표준어)
 """
 
 import os
@@ -11,20 +12,22 @@ import traceback
 
 class DialectAnalyzer:
     """
-    Uses a fine-tuned speech classification model to detect Korean dialects from audio.
+    Uses a fine-tuned speech classification model for binary classification:
+    Standard Korean (표준어) vs Non-Standard Korean (비표준어)
     """
     
     def __init__(self, model_path: str):
         """
-        Initializes the DialectAnalyzer by loading the fine-tuned model.
+        Initializes the DialectAnalyzer by loading the fine-tuned binary classification model.
 
         Args:
             model_path (str): The local path or Hugging Face Hub ID of the fine-tuned
-                              dialect classification model.
+                              binary classification model (standard vs non-standard).
         """
         self.model_path = model_path
         self.classifier = None
         self.model_loaded = False
+        self.is_binary = True  # Binary classification mode
         
         # Try to load the model
         try:
@@ -54,18 +57,17 @@ class DialectAnalyzer:
             print(f"⚠️ 방언 분석 모델 로드 중 오류 발생: {e}")
             traceback.print_exc()
     
-    def analyze(self, audio_path: str, top_k: int = 5) -> Dict[str, float]:
+    def analyze(self, audio_path: str, top_k: int = 2) -> Dict[str, float]:
         """
-        Analyzes a single audio file and returns the predicted dialect probabilities.
+        Analyzes a single audio file and returns binary classification probabilities.
 
         Args:
             audio_path (str): The path to the audio file to be analyzed.
-            top_k (int): Number of top predictions to return (default: 5).
+            top_k (int): Number of predictions to return (default: 2 for binary).
 
         Returns:
-            Dict[str, float]: A dictionary of dialect labels and their corresponding
-                              confidence scores.
-                              Example: {'gyeongsang': 0.85, 'standard': 0.10, 'jeolla': 0.05}
+            Dict[str, float]: A dictionary with binary classification probabilities.
+                              Example: {'standard': 0.85, 'non_standard': 0.15}
         """
         if not self.model_loaded or self.classifier is None:
             return {"error": "Model not loaded. Please train the model first."}
@@ -75,7 +77,7 @@ class DialectAnalyzer:
         
         try:
             # Run inference
-            predictions = self.classifier(audio_path, top_k=top_k)
+            predictions = self.classifier(audio_path, top_k=2)  # Binary classification
             
             # Format the output into a simple dictionary
             probabilities = {p['label']: round(p['score'], 4) for p in predictions}
@@ -126,30 +128,43 @@ class DialectAnalyzer:
             traceback.print_exc()
             return {"error": str(e)}
     
-    def get_top_dialect(self, audio_path: str) -> Dict[str, any]:
+    def get_classification(self, audio_path: str) -> Dict[str, any]:
         """
-        Get the most likely dialect for an audio file.
+        Get binary classification result (standard vs non-standard).
         
         Args:
             audio_path (str): Path to the audio file
             
         Returns:
-            Dict containing 'dialect' and 'confidence' keys
+            Dict containing 'is_standard', 'confidence', and 'probabilities' keys
         """
-        probabilities = self.analyze(audio_path, top_k=1)
+        probabilities = self.analyze(audio_path, top_k=2)
         
         if "error" in probabilities:
-            return {"dialect": None, "confidence": 0.0, "error": probabilities["error"]}
+            return {
+                "is_standard": None, 
+                "confidence": 0.0, 
+                "error": probabilities["error"],
+                "probabilities": {}
+            }
         
         if not probabilities:
-            return {"dialect": None, "confidence": 0.0}
+            return {"is_standard": None, "confidence": 0.0, "probabilities": {}}
         
-        # Get the dialect with highest probability
-        top_dialect = max(probabilities.items(), key=lambda x: x[1])
+        # Get standard probability
+        standard_prob = probabilities.get("standard", probabilities.get("LABEL_0", 0.0))
+        non_standard_prob = probabilities.get("non_standard", probabilities.get("LABEL_1", 0.0))
+        
+        is_standard = standard_prob > non_standard_prob
+        confidence = max(standard_prob, non_standard_prob)
         
         return {
-            "dialect": top_dialect[0],
-            "confidence": top_dialect[1]
+            "is_standard": is_standard,
+            "confidence": confidence,
+            "probabilities": {
+                "standard": standard_prob,
+                "non_standard": non_standard_prob
+            }
         }
     
     def is_available(self) -> bool:
@@ -161,24 +176,22 @@ class DialectAnalyzer:
         """
         return self.model_loaded and self.classifier is not None
     
-    def get_dialect_name_korean(self, dialect_label: str) -> str:
+    def get_label_name_korean(self, label: str) -> str:
         """
-        Convert English dialect label to Korean name.
+        Convert English label to Korean name.
         
         Args:
-            dialect_label (str): English label (e.g., 'gyeongsang')
+            label (str): English label (e.g., 'standard', 'non_standard')
             
         Returns:
-            str: Korean name (e.g., '경상도 방언')
+            str: Korean name (e.g., '표준어', '비표준어')
         """
-        dialect_names = {
-            'standard': '표준어 (서울/수도권)',
-            'gyeongsang': '경상도 방언',
-            'jeolla': '전라도 방언',
-            'chungcheong': '충청도 방언',
-            'gangwon': '강원도 방언',
-            'jeju': '제주도 방언'
+        label_names = {
+            'standard': '표준어',
+            'non_standard': '비표준어',
+            'LABEL_0': '표준어',
+            'LABEL_1': '비표준어'
         }
         
-        return dialect_names.get(dialect_label.lower(), dialect_label)
+        return label_names.get(label, label)
 

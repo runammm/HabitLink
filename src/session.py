@@ -99,7 +99,8 @@ class HabitLinkSession:
             self.stutter_detector = StutterDetector()
             
             # Initialize dialect analyzer (optional - only if model exists)
-            model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "dialect_classifier", "final_model")
+            # Binary classification model path
+            model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "dialect_binary_classifier", "final_model")
             self.dialect_analyzer = DialectAnalyzer(model_path)
             
             print("✅ Analysis modules initialized")
@@ -165,10 +166,10 @@ class HabitLinkSession:
         if "7" in selected_numbers:
             if self.dialect_analyzer and self.dialect_analyzer.is_available():
                 self.enabled_analyses["dialect"] = True
-                print("✅ 방언 분석이 활성화되었습니다.")
+                print("✅ 방언 분석이 활성화되었습니다 (표준어 vs 비표준어 판별).")
             else:
                 print("⚠️ 방언 분석 모델이 준비되지 않았습니다.")
-                print("   'notebooks/dialect_model_training.ipynb'를 실행하여 모델을 먼저 학습시켜주세요.")
+                print("   'notebooks/dialect_model_training.ipynb'를 Colab에서 실행하여 모델을 먼저 학습시켜주세요.")
     
     def prepare_session(self):
         """Prepare the session based on selected analyses."""
@@ -900,9 +901,9 @@ class HabitLinkSession:
             else:
                 print("분석할 오디오 데이터가 없습니다.")
         
-        # Dialect analysis summary
+        # Dialect analysis summary (Binary classification)
         if self.enabled_analyses["dialect"]:
-            print("\n--- 🗣️ 방언 분석 요약 ---")
+            print("\n--- 🗣️ 방언 분석 요약 (표준어 vs 비표준어) ---")
             
             if self.dialect_analyzer and self.dialect_analyzer.is_available():
                 if len(self.audio_buffer) > 0:
@@ -918,31 +919,46 @@ class HabitLinkSession:
                             # Save as WAV file
                             sf.write(temp_audio_path, audio_array, 16000)
                             
-                            print("\n📊 전체 세션 방언 분석 중...")
+                            print("\n📊 이진 분류 분석 중...")
                             
-                            # Analyze dialect
-                            dialect_result = self.dialect_analyzer.analyze(temp_audio_path, top_k=5)
+                            # Get binary classification result
+                            classification = self.dialect_analyzer.get_classification(temp_audio_path)
                             
-                            if "error" not in dialect_result:
+                            if "error" not in classification:
                                 # Store for report
-                                self.dialect_results = dialect_result
+                                self.dialect_results = classification
                                 
-                                # Display results
-                                print("\n방언 확률 분포:")
-                                for dialect, score in sorted(dialect_result.items(), key=lambda x: x[1], reverse=True):
-                                    dialect_kr = self.dialect_analyzer.get_dialect_name_korean(dialect)
-                                    bar_length = int(score * 50)
-                                    bar = "█" * bar_length + "░" * (50 - bar_length)
-                                    print(f"  {dialect_kr:25s} [{bar}] {score*100:.2f}%")
+                                # Extract probabilities
+                                probs = classification.get("probabilities", {})
+                                standard_prob = probs.get("standard", 0.0)
+                                non_standard_prob = probs.get("non_standard", 0.0)
+                                is_standard = classification.get("is_standard", False)
+                                confidence = classification.get("confidence", 0.0)
                                 
-                                # Get top dialect
-                                top_dialect_info = self.dialect_analyzer.get_top_dialect(temp_audio_path)
-                                if top_dialect_info["dialect"]:
-                                    top_dialect_kr = self.dialect_analyzer.get_dialect_name_korean(top_dialect_info["dialect"])
-                                    confidence = top_dialect_info["confidence"]
-                                    print(f"\n✨ 주요 방언: {top_dialect_kr} (신뢰도: {confidence*100:.2f}%)")
+                                # Display results with bar chart
+                                print("\n📊 확률 분포:")
+                                
+                                # Standard
+                                bar_length_std = int(standard_prob * 50)
+                                bar_std = "█" * bar_length_std + "░" * (50 - bar_length_std)
+                                print(f"  표준어      [{bar_std}] {standard_prob*100:.2f}%")
+                                
+                                # Non-standard
+                                bar_length_non = int(non_standard_prob * 50)
+                                bar_non = "█" * bar_length_non + "░" * (50 - bar_length_non)
+                                print(f"  비표준어    [{bar_non}] {non_standard_prob*100:.2f}%")
+                                
+                                # Final verdict
+                                verdict = "✅ 표준어" if is_standard else "⚠️ 비표준어"
+                                print(f"\n✨ 판정: {verdict} (신뢰도: {confidence*100:.2f}%)")
+                                
+                                # Additional info
+                                if is_standard:
+                                    print("   → 표준어 발음을 사용하고 있습니다.")
+                                else:
+                                    print("   → 방언 특성이 감지되었습니다.")
                             else:
-                                print(f"❌ 방언 분석 실패: {dialect_result['error']}")
+                                print(f"❌ 방언 분석 실패: {classification['error']}")
                             
                             # Clean up temp file
                             os.remove(temp_audio_path)
