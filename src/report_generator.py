@@ -492,6 +492,10 @@ class ReportGenerator:
                 explanation = error.get("reasoning", "")
                 timestamp = error.get("timestamp", 0)
                 
+                # Truncate long utterances for readability
+                if len(error_text) > 200:
+                    error_text = error_text[:200] + "..."
+                
                 # Convert absolute timestamp to relative time from session start
                 if session_start and timestamp > 1000000000:  # Unix timestamp check
                     relative_seconds = timestamp - session_start.timestamp()

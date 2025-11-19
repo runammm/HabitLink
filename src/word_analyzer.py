@@ -63,17 +63,21 @@ class WordAnalyzer:
                             "timestamp": word_timestamp  # Use the word's precise start time
                         })
                     
-                    # Substring matching for Korean (e.g., "시발" in "시발새끼")
+                    # Substring matching for Korean (e.g., "시발" in "시발새끼", "개" and "좆같은" in "좆같은게")
+                    # Note: We must check ALL keywords, not just the first match (no break)
+                    # A single word can contain multiple profanities (e.g., "좆같은게" contains both "좆같은" and "개")
                     else:
                         for kw in search_keywords:
-                            if kw in word and position_key not in found_positions:
-                                found_positions.add(position_key)
+                            # Create unique position key for each keyword in this word
+                            position_key_for_kw = f"{word_timestamp}_{word}_{kw}"
+                            if kw in word and position_key_for_kw not in found_positions:
+                                found_positions.add(position_key_for_kw)
                                 found_keywords.append({
                                     "keyword": kw,
                                     "speaker": speaker,
                                     "timestamp": word_timestamp
                                 })
-                                break  # Only match once per word
+                                # NO break - continue checking other keywords in the same word
             else:
                 # Fallback: Parse the text directly if word-level timestamps are not available
                 # Split text by whitespace and punctuation to extract words
@@ -99,16 +103,20 @@ class WordAnalyzer:
                             "timestamp": timestamp
                         })
                     
-                    # Substring matching for Korean profanity (e.g., "시발" in "시발새끼")
+                    # Substring matching for Korean profanity (e.g., "시발" in "시발새끼", "개" and "좆같은" in "좆같은게")
+                    # Note: We must check ALL keywords, not just the first match (no break)
+                    # A single word can contain multiple profanities (e.g., "좆같은게" contains both "좆같은" and "개")
                     elif word_lower:
                         for kw in search_keywords:
-                            if kw in word_lower and position_key not in found_positions:
-                                found_positions.add(position_key)
+                            # Create unique position key for each keyword in this word
+                            position_key_for_kw = f"{timestamp}_{word_lower}_{kw}"
+                            if kw in word_lower and position_key_for_kw not in found_positions:
+                                found_positions.add(position_key_for_kw)
                                 found_keywords.append({
                                     "keyword": kw,
                                     "speaker": speaker,
                                     "timestamp": timestamp
                                 })
-                                break  # Only match once per word
+                                # NO break - continue checking other keywords in the same word
 
         return found_keywords

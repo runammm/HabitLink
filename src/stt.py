@@ -39,6 +39,7 @@ class GoogleSTTStreaming:
         
         # Control flags
         self.is_streaming = False
+        self.is_paused = True  # Start paused - system warm but not recording
         self.stop_flag = False
         self.restart_counter = 0
         self.last_transcript_was_final = False
@@ -64,6 +65,7 @@ class GoogleSTTStreaming:
         return speech.StreamingRecognitionConfig(
             config=self._get_config(),
             interim_results=True,
+            single_utterance=False,  # Continue listening after pauses - don't stop at first silence
         )
     
     def _fill_buffer(self):
@@ -84,14 +86,42 @@ class GoogleSTTStreaming:
                 break
     
     def audio_generator(self):
-        """Generator that yields audio chunks from the queue."""
+        """Generator that yields audio chunks from the queue (only when not paused)."""
         while not self.stop_flag:
             try:
                 # Get audio from queue with timeout
                 chunk = self.audio_queue.get(timeout=0.1)
-                yield chunk
+                
+                # Only yield audio if not paused (recording is active)
+                if not self.is_paused:
+                    yield chunk
+                # If paused, discard the audio chunk (keep buffer empty)
             except:
                 continue
+    
+    def pause(self):
+        """Pause recording (stop sending audio to STT, but keep stream alive)."""
+        self.is_paused = True
+        print("⏸️  Recording paused (system still warm)")
+    
+    def resume(self):
+        """Resume recording (start sending audio to STT again)."""
+        # Clear the audio queue to discard old audio accumulated during pause
+        # This ensures we process only fresh audio for instant detection
+        cleared_count = 0
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+                cleared_count += 1
+            except:
+                break
+        
+        if cleared_count > 0:
+            print(f"🗑️  Cleared {cleared_count} old audio chunks from queue")
+        
+        self.is_paused = False
+        self.stream_start_time = time.time()  # Reset stream start time
+        print("▶️  Recording resumed - processing fresh audio only")
     
     def listen_print_loop(self, responses):
         """
@@ -184,13 +214,17 @@ class GoogleSTTStreaming:
                 if self.callback:
                     self.callback(transcript, False, "SPEAKER_00", timing_info)
     
-    def start_streaming(self):
-        """Start the streaming recognition."""
-        self.stop_flag = False
-        self.is_streaming = True
-        self.stream_start_time = time.time()
+    def prepare(self):
+        """
+        Pre-initialize audio stream and start capturing (but don't send to STT yet).
+        This "warms up" the system for instant recording when resume() is called.
+        """
+        if self.stream is not None:
+            return  # Already prepared
         
         try:
+            print("🔧 Pre-initializing audio stream...")
+            
             # Open audio stream
             self.stream = self.audio.open(
                 format=pyaudio.paInt16,
@@ -200,19 +234,54 @@ class GoogleSTTStreaming:
                 frames_per_buffer=self.CHUNK,
             )
             
-            # Start microphone reading thread BEFORE making streaming request
+            # Start microphone reading thread
             self.mic_thread = threading.Thread(target=self._fill_buffer, daemon=True)
             self.mic_thread.start()
             
             # Wait a bit to fill buffer
-            print("버퍼링 중...")
             buffer_wait = 0
-            max_wait = 2  # Maximum wait time in seconds
+            max_wait = 1.5  # Reduced wait time
             while self.audio_queue.qsize() < 10 and buffer_wait < max_wait:
                 time.sleep(0.1)
                 buffer_wait += 0.1
             
-            print(f"버퍼 준비 완료 ({self.audio_queue.qsize()} chunks)")
+            print(f"✅ Audio stream ready ({self.audio_queue.qsize()} chunks buffered)")
+            print("   System is warm and ready for instant recording!")
+            
+        except Exception as e:
+            print(f"❌ Error preparing audio stream: {e}")
+    
+    def start_streaming(self):
+        """Start the streaming recognition."""
+        self.stop_flag = False
+        self.is_streaming = True
+        self.stream_start_time = time.time()
+        
+        try:
+            # If not already prepared, prepare now
+            if self.stream is None:
+                # Open audio stream
+                self.stream = self.audio.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=self.RATE,
+                    input=True,
+                    frames_per_buffer=self.CHUNK,
+                )
+                
+                # Start microphone reading thread BEFORE making streaming request
+                self.mic_thread = threading.Thread(target=self._fill_buffer, daemon=True)
+                self.mic_thread.start()
+                
+                # Wait a bit to fill buffer
+                print("버퍼링 중...")
+                buffer_wait = 0
+                max_wait = 2  # Maximum wait time in seconds
+                while self.audio_queue.qsize() < 10 and buffer_wait < max_wait:
+                    time.sleep(0.1)
+                    buffer_wait += 0.1
+                
+                print(f"버퍼 준비 완료 ({self.audio_queue.qsize()} chunks)")
             
             while not self.stop_flag:
                 print(f"\n📡 Opening new stream (restart #{self.restart_counter})...")

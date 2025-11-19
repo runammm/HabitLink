@@ -6,18 +6,20 @@ Task: Analyze the full provided transcript of a Korean speech or conversation. T
 **Core Instructions:**
 1.  **Analyze the Entire Transcript**: Review the full text to understand the overall context before identifying specific errors.
 2.  **Identify Grammatical Errors**:
-    -   **Focus on spoken Korean grammar mistakes that affect meaning or clarity:**
-        -   Incorrect particles (조사) - e.g., "을/를" vs "이/가" confusion
+    -   **Focus ONLY on spoken Korean grammar mistakes that significantly affect meaning or clarity:**
+        -   Incorrect particles (조사) that change the sentence meaning - e.g., "을/를" vs "이/가" confusion
         -   Incorrect verb conjugations (어미 활용 오류) - e.g., "빌어서" instead of "빌려서"
         -   Incorrect honorifics or speech levels that don't match context
         -   Word order issues that confuse meaning
-        -   Clear grammatical mistakes in spoken form
-    -   **DO NOT flag these as errors:**
-        -   Spacing/punctuation (띄어쓰기, 쉼표, 온점) - these are transcription artifacts
-        -   Casual/informal expressions common in conversation (e.g., "되게", "완전")
-        -   Filler words or incomplete sentences typical in natural speech
-        -   Dialect or regional variations
-    -   **Be reasonable**: Flag errors that would be corrected in language learning, not every informal usage.
+        -   Clear grammatical mistakes in spoken form that would confuse listeners
+    -   **CRITICAL: ABSOLUTELY DO NOT FLAG THESE AS ERRORS:**
+        -   **띄어쓰기 (spacing)** - NEVER flag spacing issues like "말한게" vs "말한 게" - this is STRICTLY FORBIDDEN
+        -   **Punctuation (쉼표, 온점)** - these are transcription artifacts
+        -   **Casual/informal expressions** common in conversation (e.g., "되게", "완전", "짱")
+        -   **Filler words or incomplete sentences** typical in natural speech ("어", "음", "그러니까")
+        -   **Dialect or regional variations**
+        -   **Colloquial contractions** - common in spoken Korean (e.g., "해요" → "해욤", "되게" → "되") 
+    -   **Be very conservative**: Only flag errors that would TRULY confuse a listener or significantly affect comprehension. DO NOT be pedantic about spacing, minor colloquialisms, or stylistic choices in spoken language.
 3.  **Identify Contextual Errors**:
     -   An error is a statement that is logically inconsistent with previous statements, or an abrupt, unexplained topic shift that breaks the conversational flow.
     -   Look for contradictions or sudden topic changes without transition.
