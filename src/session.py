@@ -58,6 +58,10 @@ class HabitLinkSession:
         self.audio_queue = Queue()
         self.stop_event = threading.Event()
         
+        # Recording state management (for instant detection)
+        self.is_recording = False
+        self.is_initialized = False
+        
         # Streaming buffers
         self.transcript_buffer = []  # Buffer for recent transcripts
         self.audio_buffer = deque(maxlen=16000 * 30)  # 30 seconds of audio at 16kHz
@@ -82,16 +86,21 @@ class HabitLinkSession:
         # Report generator
         self.report_generator = ReportGenerator()
         
-    def initialize_components(self):
-        """Initialize all analysis components."""
-        print("\n🚀 Initializing HabitLink components...")
-        
+        # Early initialization for instant detection
+        print("\n🚀 Pre-initializing components for instant detection...")
+        self._early_initialize()
+    
+    def _early_initialize(self):
+        """
+        Early initialization of all components for instant detection.
+        This runs immediately when HabitLinkSession is created.
+        """
         try:
-            # Initialize audio engine (still used for calibration)
+            # Initialize audio engine (used for calibration)
             self.audio_engine = AudioEngine(samplerate=16000, channels=1)
             print("✅ Audio engine initialized")
             
-            # Initialize analyzers
+            # Initialize all analyzers upfront
             self.word_analyzer = WordAnalyzer()
             self.speech_rate_analyzer = SpeechRateAnalyzer()
             self.text_analyzer = TextAnalyzer()
@@ -99,7 +108,6 @@ class HabitLinkSession:
             self.stutter_detector = StutterDetector()
             
             # Initialize dialect analyzer (optional - only if model exists)
-            # Binary classification model path
             model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "dialect_binary_classifier", "final_model")
             self.dialect_analyzer = DialectAnalyzer(model_path)
             
@@ -109,12 +117,23 @@ class HabitLinkSession:
             self.profanity_list = load_profanity_list()
             print(f"✅ Profanity list loaded ({len(self.profanity_list)} words)")
             
+            self.is_initialized = True
+            print("✅ System ready for instant detection\n")
             return True
             
         except Exception as e:
-            print(f"❌ Error initializing components: {e}")
+            print(f"❌ Error during early initialization: {e}")
             traceback.print_exc()
+            self.is_initialized = False
             return False
+        
+    def initialize_components(self):
+        """
+        Legacy method for compatibility. Components are now initialized in _early_initialize().
+        """
+        if not self.is_initialized:
+            return self._early_initialize()
+        return True
     
     def select_analyses(self):
         """Interactive menu for users to select which analyses to enable."""
@@ -277,6 +296,10 @@ class HabitLinkSession:
             speaker: Speaker label
             timing_info: Optional dict with 'start_time', 'end_time', and 'word_timestamps'
         """
+        # Only process if we're actively recording
+        if not self.is_recording:
+            return
+            
         if not transcript:
             return
         
@@ -580,8 +603,12 @@ class HabitLinkSession:
             audio_chunk: Raw audio bytes
         """
         try:
-            # Send to UI queue for visualization
+            # Always send to UI queue for visualization (even before recording starts)
             self.audio_queue.put(audio_chunk)
+            
+            # Only process for analysis if we're actively recording
+            if not self.is_recording:
+                return
             
             # Add to buffer for stutter analysis
             audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -617,17 +644,23 @@ class HabitLinkSession:
             pass  # Silently ignore errors in callback
     
     def streaming_producer(self):
-        """Streaming producer: captures audio and sends to GCP STT."""
+        """
+        Streaming producer: captures audio and sends to GCP STT.
+        Note: This starts the STT connection immediately for instant detection,
+        but actual processing only happens when is_recording=True.
+        """
         print("🎤 Streaming producer started")
         
         try:
             # Initialize streaming STT with callbacks
+            # Connection is established here for instant detection
             self.streaming_stt = GoogleSTTStreaming(
                 callback=self.stt_callback,
                 audio_callback=self.audio_callback
             )
             
             # Start streaming (blocking, includes audio capture)
+            # This pre-warms the connection so detection is instant when triggered
             self.streaming_stt.start_streaming()
             
         except Exception as e:
@@ -1003,10 +1036,26 @@ class HabitLinkSession:
             print(f"❌ PDF 리포트 생성 실패: {e}")
             traceback.print_exc()
     
+    def _wait_for_start_trigger(self):
+        """
+        Wait for 's' key press to start recording.
+        Uses a simple blocking input for cross-platform compatibility.
+        """
+        while True:
+            try:
+                key = input("\n입력: ").strip().lower()
+                if key == 's':
+                    break
+                else:
+                    print("'s' 키를 눌러주세요.", end='', flush=True)
+            except KeyboardInterrupt:
+                # Allow Ctrl+C to exit
+                raise
+    
     def run(self, enable_ui: bool = True):
         """Run the main HabitLink session."""
-        # Initialize components
-        if not self.initialize_components():
+        # Check if initialization succeeded
+        if not self.is_initialized:
             print("❌ 초기화 실패. 프로그램을 종료합니다.")
             return
         
@@ -1018,16 +1067,34 @@ class HabitLinkSession:
             print("\n⚠️ 활성화된 분석이 없습니다. 프로그램을 종료합니다.")
             return
         
-        # Prepare session
+        # Prepare session (calibration, etc.)
         self.prepare_session()
         
-        # Record session start time
-        self.session_start_time = datetime.now()
-        print(f"\n🕐 세션 시작 시각: {self.session_start_time.strftime('%Y년 %m월 %d일 %H:%M:%S')}")
-        
-        # Start streaming thread
+        # Start streaming thread (but not recording yet)
+        # This pre-establishes the STT connection for instant detection
         streaming_thread = threading.Thread(target=self.streaming_producer, daemon=True)
         streaming_thread.start()
+        
+        # Wait for streaming to be fully ready
+        print("\n⏳ 스트리밍 연결 중... (음성 인식 엔진 준비)")
+        time.sleep(2.5)  # Give streaming time to establish connection and fill buffer
+        
+        # Show trigger prompt
+        print("\n" + "="*60)
+        print("🎯 모든 준비가 완료되었습니다!")
+        print("="*60)
+        print("\n📝 's' 키를 눌러 녹음을 시작하세요.")
+        print("   (녹음을 종료하려면 UI 창을 닫거나 Ctrl+C를 누르세요)")
+        print("\n대기 중...", end='', flush=True)
+        
+        # Wait for 's' key press to start recording
+        self._wait_for_start_trigger()
+        
+        # Start recording
+        self.is_recording = True
+        self.session_start_time = datetime.now()
+        print(f"\n\n🔴 녹음 시작! ({self.session_start_time.strftime('%H:%M:%S')})")
+        print("="*60)
         
         # Start console feedback thread
         console_thread = threading.Thread(target=self.console_feedback_loop, daemon=True)
