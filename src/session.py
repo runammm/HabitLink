@@ -86,11 +86,13 @@ class HabitLinkSession:
         self.llm_analyzed_transcript_ids = set()  # Track transcripts already analyzed by LLM
         
         # Track word counts in current interim sequence (reset on Final)
-        # This is the ROOT SOLUTION for duplicate prevention
         # Format: {(type, keyword_lowercase): count}
         self.interim_word_counts = {}
         
-        # Track last interim text for reference (optional, for debugging)
+        # Track detected items to prevent duplicates in report
+        # Format: {(type, keyword_lowercase, rounded_timestamp)}
+        self.detected_items_for_report = set()
+        
         self.last_interim_text = ""
         
         # Session metadata
@@ -496,88 +498,76 @@ class HabitLinkSession:
                     result = await task
                     
                     if task_name == "keywords" and result:
-                        # COUNT-BASED FEEDBACK: Only provide feedback for NEW occurrences
-                        # Step 1: Count how many times each keyword appears in current result
                         current_counts = {}
-                        keyword_items = {}  # Store first item for each keyword for metadata
+                        keyword_items = {}
                         for item in result:
                             keyword_lower = item['keyword'].lower()
                             current_counts[keyword_lower] = current_counts.get(keyword_lower, 0) + 1
                             if keyword_lower not in keyword_items:
                                 keyword_items[keyword_lower] = item
                         
-                        # Step 2: Get previous counts from session state
-                        # (NOT from transcript_item which is a copy - we need the live state)
-                        
-                        # Step 3: For EACH unique keyword, provide feedback for count DIFFERENCE
                         for keyword_lower, current_count in current_counts.items():
                             count_key = ("keyword", keyword_lower)
                             prev_count = self.interim_word_counts.get(count_key, 0)
-                            
-                            # Calculate how many NEW occurrences
                             new_occurrences = current_count - prev_count
                             
                             if new_occurrences > 0:
-                                # Provide feedback for each NEW occurrence
                                 item = keyword_items[keyword_lower]
                                 keyword = item['keyword']
                                 
+                                if "timestamp" not in item or item["timestamp"] is None:
+                                    item["timestamp"] = transcript_item["timestamp"]
+                                
+                                # Real-time feedback
                                 for i in range(new_occurrences):
-                                    # Ensure timestamp is set correctly
-                                    if "timestamp" not in item or item["timestamp"] is None:
-                                        item["timestamp"] = transcript_item["timestamp"]
                                     msg = f"키워드 검출: '{keyword}'"
                                     print(f"🔔 {msg}")
                                     self.feedback_queue.put(msg)
                                     self.ui_feedback_queue.put({"message": msg, "type": "keyword"})
                                 
-                                # Update the count we've seen to current count
+                                # Store for report (with deduplication)
+                                report_key = ("keyword", keyword_lower, round(item["timestamp"], 1))
+                                if report_key not in self.detected_items_for_report:
+                                    self.detected_items_for_report.add(report_key)
+                                    self.all_keyword_detections.append(item)
+                                
                                 self.interim_word_counts[count_key] = current_count
-                        
-                        # NOTE: DO NOT store interim results to prevent duplicates
-                        # Only final results are stored in _analyze_single_transcript
                     
                     elif task_name == "profanity" and result:
-                        # COUNT-BASED FEEDBACK: Only provide feedback for NEW occurrences
-                        # Step 1: Count how many times each profanity appears in current result
                         current_counts = {}
-                        profanity_items = {}  # Store first item for each profanity for metadata
+                        profanity_items = {}
                         for item in result:
                             profanity_lower = item['keyword'].lower()
                             current_counts[profanity_lower] = current_counts.get(profanity_lower, 0) + 1
                             if profanity_lower not in profanity_items:
                                 profanity_items[profanity_lower] = item
                         
-                        # Step 2: Get previous counts from session state
-                        # (NOT from transcript_item which is a copy - we need the live state)
-                        
-                        # Step 3: For EACH unique profanity, provide feedback for count DIFFERENCE
                         for profanity_lower, current_count in current_counts.items():
                             count_key = ("profanity", profanity_lower)
                             prev_count = self.interim_word_counts.get(count_key, 0)
-                            
-                            # Calculate how many NEW occurrences
                             new_occurrences = current_count - prev_count
                             
                             if new_occurrences > 0:
-                                # Provide feedback for each NEW occurrence
                                 item = profanity_items[profanity_lower]
                                 profanity = item['keyword']
                                 
+                                if "timestamp" not in item or item["timestamp"] is None:
+                                    item["timestamp"] = transcript_item["timestamp"]
+                                
+                                # Real-time feedback
                                 for i in range(new_occurrences):
-                                    # Ensure timestamp is set correctly
-                                    if "timestamp" not in item or item["timestamp"] is None:
-                                        item["timestamp"] = transcript_item["timestamp"]
                                     msg = f"비속어 검출: '{profanity}'"
                                     print(f"🔔 {msg}")
                                     self.feedback_queue.put(msg)
                                     self.ui_feedback_queue.put({"message": msg, "type": "profanity"})
                                 
-                                # Update the count we've seen to current count
+                                # Store for report (with deduplication)
+                                report_key = ("profanity", profanity_lower, round(item["timestamp"], 1))
+                                if report_key not in self.detected_items_for_report:
+                                    self.detected_items_for_report.add(report_key)
+                                    self.all_profanity_detections.append(item)
+                                
                                 self.interim_word_counts[count_key] = current_count
-                        
-                        # NOTE: DO NOT store interim results to prevent duplicates
-                        # Only final results are stored in _analyze_single_transcript
                 
                 except Exception as e:
                     print(f"⚠️ Error in {task_name} analysis: {e}")
@@ -585,41 +575,24 @@ class HabitLinkSession:
                     traceback.print_exc()
     
     async def _analyze_single_transcript(self, transcript_item: Dict):
-        """Analyze a single transcript immediately (full analysis for final results).
-        
-        NOTE: Final results are stored for reports AND feedback is provided
-        to ensure nothing is missed (Interim may not cover all text).
-        
-        CRITICAL: Uses IDENTICAL logic as _analyze_fast_only() for consistency!
-        """
+        """Analyze a single transcript immediately (full analysis for final results)."""
         segment = self._prepare_segment(transcript_item)
-        text = transcript_item["text"]
         word_count = len(segment["text"].split())
-        
-        # DEBUG: Show what we're analyzing
-        print(f"\n🔍 [DEBUG Final Analysis]")
-        print(f"   Original text: '{text[:150]}'...")
-        print(f"   Segment text:  '{segment['text'][:150]}'...")
-        print(f"   Text lengths: original={len(text)}, segment={len(segment['text'])}")
-        print(f"   Words in segment: {len(segment.get('words', []))}")
         
         loop = asyncio.get_running_loop()
         
         with concurrent.futures.ThreadPoolExecutor() as pool:
             tasks = []
             
-            # Keyword detection (fast) - IDENTICAL to _analyze_fast_only()
+            # Keyword detection
             if self.enabled_analyses["keyword_detection"] and self.custom_keywords:
                 keyword_task = loop.run_in_executor(
                     pool, self.word_analyzer.analyze, [segment], self.custom_keywords
                 )
                 tasks.append(("keywords", keyword_task))
             
-            # Profanity detection (fast) - IDENTICAL to _analyze_fast_only()
+            # Profanity detection
             if self.enabled_analyses["profanity_detection"]:
-                print(f"   Calling word_analyzer.analyze() for profanity...")
-                print(f"   Profanity list size: {len(self.profanity_list)}")
-                print(f"   Sample profanity: {self.profanity_list[:10]}")
                 profanity_task = loop.run_in_executor(
                     pool, self.word_analyzer.analyze, [segment], self.profanity_list
                 )
@@ -639,42 +612,27 @@ class HabitLinkSession:
                     
                     if task_name == "keywords" and result:
                         for item in result:
-                            # Ensure timestamp is set correctly
                             if "timestamp" not in item or item["timestamp"] is None:
                                 item["timestamp"] = transcript_item["timestamp"]
-                            # Store for report
-                            self.all_keyword_detections.append(item)
+                            
+                            # Store for report (with deduplication)
+                            keyword_lower = item['keyword'].lower()
+                            report_key = ("keyword", keyword_lower, round(item["timestamp"], 1))
+                            if report_key not in self.detected_items_for_report:
+                                self.detected_items_for_report.add(report_key)
+                                self.all_keyword_detections.append(item)
                     
                     elif task_name == "profanity" and result:
-                        print(f"✅ [DEBUG Final] Profanity detected: {len(result)} items")
-                        print(f"   Result items: {[(r['keyword'], r.get('timestamp', 'N/A')) for r in result]}")
                         for item in result:
-                            # Ensure timestamp is set correctly
                             if "timestamp" not in item or item["timestamp"] is None:
                                 item["timestamp"] = transcript_item["timestamp"]
-                            # Store for report
-                            self.all_profanity_detections.append(item)
-                            print(f"   → Stored: '{item['keyword']}' at {item['timestamp']}")
-                    elif task_name == "profanity" and not result:
-                        # Enhanced debug: show what Google STT actually transcribed
-                        print(f"⚠️ [DEBUG Final] No profanity found in analyzer result")
-                        print(f"   Full segment text ({len(segment['text'])} chars): '{segment['text'][:300]}'...")
-                        print(f"   Profanity list size: {len(self.profanity_list)}")
-                        print(f"   Looking for: {self.profanity_list[:20]}")
-                        # Check if profanity exists in raw text
-                        found_in_text = []
-                        for prof in ['시발', '씨발', '좆같은', '개새끼', '년']:
-                            if prof in segment['text']:
-                                found_in_text.append(prof)
-                        if found_in_text:
-                            print(f"   ⚠️ WARNING: Found in raw text but NOT detected: {found_in_text}")
-                        # Most important: Show what words Google STT recognized
-                        words_list = segment.get("words", [])
-                        if words_list:
-                            word_texts = [w.get("word", "").strip() for w in words_list]
-                            print(f"   Words in segment ({len(word_texts)}): {' / '.join(word_texts[:30])}...")
-                        else:
-                            print(f"   ⚠️ No word-level timestamps in segment!")
+                            
+                            # Store for report (with deduplication)
+                            profanity_lower = item['keyword'].lower()
+                            report_key = ("profanity", profanity_lower, round(item["timestamp"], 1))
+                            if report_key not in self.detected_items_for_report:
+                                self.detected_items_for_report.add(report_key)
+                                self.all_profanity_detections.append(item)
                     
                     elif task_name == "speech_rate" and result:
                         # Ensure each result has proper timestamp
