@@ -19,6 +19,7 @@ class StutterAnalyzer:
                  sample_rate: int = 16000,
                  prolongation_threshold_sec: float = 0.8,
                  block_threshold_sec: float = 1.0,
+                 sentence_end_threshold_sec: float = 1.5,
                  silence_top_db: int = 30):
         """
         Initializes the StutterAnalyzer with configurable thresholds.
@@ -27,15 +28,20 @@ class StutterAnalyzer:
             sample_rate (int): Audio sample rate (default: 16000 Hz for GCP STT)
             prolongation_threshold_sec (float): Duration threshold for prolongations (seconds)
             block_threshold_sec (float): Duration threshold for blocks/pauses (seconds)
+            sentence_end_threshold_sec (float): More relaxed threshold for sentence-ending pauses (seconds)
             silence_top_db (int): dB threshold for silence detection (lower = more sensitive)
         """
         self.sr = sample_rate
         self.prolongation_threshold = prolongation_threshold_sec
         self.block_threshold = block_threshold_sec
+        self.sentence_end_threshold = sentence_end_threshold_sec  # 문장 끝에는 더 관대하게
         self.silence_top_db = silence_top_db
         
         # Common Korean filler words that are often prolonged
         self.filler_words = {'음', '어', '그', '이', '저', '아'}
+        
+        # Sentence-ending punctuation marks
+        self.sentence_endings = {'.', '!', '?', '。', '！', '？'}
     
     def _detect_repetitions(self, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -189,9 +195,42 @@ class StutterAnalyzer:
         
         return prolongations
     
+    def _is_near_sentence_end(self, text: str, position_ratio: float) -> bool:
+        """
+        Check if the position is near a sentence ending.
+        
+        Args:
+            text: The text segment
+            position_ratio: Position in the segment (0.0 to 1.0)
+            
+        Returns:
+            True if near sentence ending, False otherwise
+        """
+        if not text:
+            return False
+        
+        # Check if text ends with sentence-ending punctuation
+        text_stripped = text.strip()
+        if text_stripped and text_stripped[-1] in self.sentence_endings:
+            # If the pause is in the latter half of the segment, it's likely after sentence end
+            return position_ratio > 0.5
+        
+        # Check for sentence-ending punctuation within the text
+        for i, char in enumerate(text):
+            if char in self.sentence_endings:
+                char_position_ratio = i / len(text)
+                # If the pause position is close to a sentence ending (within 20%)
+                if abs(char_position_ratio - position_ratio) < 0.2:
+                    return True
+        
+        return False
+    
     def _detect_blocks(self, audio_path: str, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Analyzes audio for blocks (unnatural silences within speech segments).
+        Uses context-aware thresholds:
+        - Within sentence: 1.0s threshold (stricter)
+        - Near sentence end: 1.5s threshold (more relaxed)
         
         Args:
             audio_path: Path to the audio file
@@ -237,8 +276,15 @@ class StutterAnalyzer:
                         silence_end_sample = non_silent_intervals[i + 1][0]
                         silence_duration = (silence_end_sample - silence_start_sample) / sr
                         
-                        # If silence is longer than threshold, it's a potential block
-                        if silence_duration > self.block_threshold:
+                        # Calculate position ratio in the segment (0.0 to 1.0)
+                        position_in_segment = silence_start_sample / len(segment_audio) if len(segment_audio) > 0 else 0.5
+                        
+                        # Context-aware threshold selection
+                        is_near_end = self._is_near_sentence_end(text, position_in_segment)
+                        threshold = self.sentence_end_threshold if is_near_end else self.block_threshold
+                        
+                        # If silence is longer than threshold, it's a block
+                        if silence_duration > threshold:
                             # Calculate timestamp relative to full audio
                             block_timestamp = start + (silence_start_sample / sr)
                             
@@ -248,7 +294,9 @@ class StutterAnalyzer:
                                 "speaker": speaker,
                                 "timestamp": round(block_timestamp, 2),
                                 "segment_text": text,
-                                "severity": "severe" if silence_duration > self.block_threshold * 1.5 else "moderate"
+                                "context": "sentence_end" if is_near_end else "mid_sentence",
+                                "threshold_used": round(threshold, 2),
+                                "severity": "severe" if silence_duration > threshold * 1.5 else "moderate"
                             })
         
         except Exception as e:

@@ -94,6 +94,7 @@ class HabitLinkSession:
         self.detected_items_for_report = set()
         
         self.last_interim_text = ""
+        self.last_interim_item = None  # Store last interim to handle session end
         
         # Session metadata
         self.session_start_time = None
@@ -365,6 +366,9 @@ class HabitLinkSession:
                 "word_timestamps": timing_info.get("word_timestamps", []) if timing_info else []
             }
             
+            # Store as last interim (in case session ends before Final)
+            self.last_interim_item = transcript_item.copy()
+            
             # Run fast analysis in separate thread with count-based feedback
             analysis_thread = threading.Thread(
                 target=self._run_fast_analysis_sync,
@@ -377,6 +381,7 @@ class HabitLinkSession:
             # FINAL RESULT: Reset interim tracking and run full analysis
             # Reset word counts for next sentence
             self.last_interim_text = ""
+            self.last_interim_item = None  # Clear interim since we got Final
             self.interim_word_counts.clear()  # Clear counts for next sentence
             
             # Create unique ID for this transcript to prevent duplicates
@@ -1359,6 +1364,34 @@ class HabitLinkSession:
         time.sleep(2)  # Give STT a moment to finish processing any remaining audio
         streaming_thread.join(timeout=10)  # Increased from 5 to 10 seconds
         console_thread.join(timeout=3)  # Increased from 2 to 3 seconds
+        
+        # Handle last interim if session ended before Final result
+        if self.last_interim_item is not None:
+            # Check if this text was already saved as Final (to avoid duplicates)
+            last_text = self.last_interim_item["text"]
+            is_duplicate = any(
+                item["text"] == last_text 
+                for item in self.transcript_buffer
+            )
+            
+            if not is_duplicate and last_text.strip():
+                # Save this interim as Final
+                timestamp = self.last_interim_item["timestamp"]
+                transcript_id = f"{timestamp}_{last_text[:50]}"
+                
+                final_item = {
+                    "text": last_text,
+                    "timestamp": timestamp,
+                    "speaker": self.last_interim_item["speaker"],
+                    "is_final": True,
+                    "id": transcript_id,
+                    "audio_start_time": self.last_interim_item.get("audio_start_time"),
+                    "audio_end_time": self.last_interim_item.get("audio_end_time"),
+                    "word_timestamps": self.last_interim_item.get("word_timestamps", [])
+                }
+                
+                self.transcript_buffer.append(final_item)
+                print(f"✅ 마지막 발화 저장: {last_text[:100]}...")
         
         # Generate summary report
         self.generate_summary_report()

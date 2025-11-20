@@ -40,8 +40,10 @@ class StutterDetector:
                  prolongation_duration_threshold: float = 0.8,
                  # Block (intra-lexical): 150ms within words (research-based)
                  intra_lexical_silence_threshold: float = 0.15,
-                 # Hesitation (inter-lexical): 250ms between words (normal)
-                 inter_lexical_silence_threshold: float = 0.25):
+                # Hesitation (inter-lexical): 250ms between words (normal)
+                inter_lexical_silence_threshold: float = 0.25,
+                # Long pause (sentence-ending): 1.5s or more (natural sentence boundary)
+                sentence_pause_threshold: float = 1.5):
         """
         Initialize the real-time stutter detector with research-based thresholds.
         
@@ -54,6 +56,7 @@ class StutterDetector:
             prolongation_duration_threshold: Minimum duration for prolongation (800ms, relaxed)
             intra_lexical_silence_threshold: Silence threshold within words (150ms)
             inter_lexical_silence_threshold: Silence threshold between words (250ms, normal)
+            sentence_pause_threshold: Silence threshold for sentence boundaries (1.5s, normal)
         """
         self.sr = sample_rate
         self.frame_length = frame_length
@@ -63,6 +66,7 @@ class StutterDetector:
         self.prolongation_threshold = prolongation_duration_threshold
         self.intra_lexical_threshold = intra_lexical_silence_threshold
         self.inter_lexical_threshold = inter_lexical_silence_threshold
+        self.sentence_pause_threshold = sentence_pause_threshold  # 문장 간 긴 쉼
         
         # Sliding window buffer (last 3 seconds of audio)
         self.audio_buffer = deque(maxlen=sample_rate * 3)
@@ -237,12 +241,12 @@ class StutterDetector:
     def _detect_blocks_contextual(self, audio: np.ndarray, timestamp: float):
         """
         Detect blocks (intra-lexical pauses) using contextual analysis.
-        Key insight: Distinguish between inter-lexical (≥250ms, normal) and 
-        intra-lexical pauses (≥150ms, stuttering).
+        Key insight: Distinguish between different types of pauses:
         
-        Research criterion:
-        - Intra-lexical (within words): ≥150ms → Block
-        - Inter-lexical (between words): ≥250ms → Normal hesitation
+        Research criteria:
+        - Intra-lexical (within words): ≥150ms → Block (stuttering)
+        - Inter-lexical (between words): 250ms-1.5s → Normal hesitation
+        - Sentence boundary: ≥1.5s → Natural pause (NOT a block)
         """
         try:
             # Detect speech/silence intervals using energy-based VAD
@@ -270,6 +274,10 @@ class StutterDetector:
                 speech1_energy = np.mean(speech1_audio ** 2) if len(speech1_audio) > 0 else 0
                 speech2_energy = np.mean(speech2_audio ** 2) if len(speech2_audio) > 0 else 0
                 
+                # Skip very long pauses (likely sentence boundaries, not blocks)
+                if gap_duration >= self.sentence_pause_threshold:
+                    continue  # 1.5초 이상은 문장 간 쉼으로 간주, 정상
+                
                 # Both sides must have speech energy
                 if speech1_energy > self.energy_threshold and speech2_energy > self.energy_threshold:
                     # Determine if this is likely intra-lexical or inter-lexical
@@ -284,7 +292,7 @@ class StutterDetector:
                     # Apply appropriate threshold
                     if is_likely_intra_lexical:
                         # Intra-lexical: ≥150ms is a block (research criterion)
-                        if gap_duration >= self.intra_lexical_threshold and gap_duration < 1.0:
+                        if gap_duration >= self.intra_lexical_threshold:
                             event = {
                                 'type': 'block',
                                 'timestamp': timestamp - ((len(audio) - speech1_end) / self.sr),
@@ -297,8 +305,8 @@ class StutterDetector:
                                 self.detected_events.append(event)
                     else:
                         # Inter-lexical: ≥250ms might be normal hesitation
-                        # Only flag if it's unusually long (>500ms)
-                        if gap_duration >= 0.5 and gap_duration < 1.5:
+                        # Only flag if it's unusually long (>500ms), but not too long (sentence boundary)
+                        if gap_duration >= 0.5:
                             event = {
                                 'type': 'block',
                                 'timestamp': timestamp - ((len(audio) - speech1_end) / self.sr),
