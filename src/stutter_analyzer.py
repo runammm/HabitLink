@@ -46,6 +46,7 @@ class StutterAnalyzer:
     def _detect_repetitions(self, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Analyzes text segments for word repetitions.
+        Enhanced to detect shorter repetitions like "그그러니까" (2 repetitions).
         
         Args:
             transcript: Diarized transcript with text and timestamps
@@ -59,12 +60,13 @@ class StutterAnalyzer:
         patterns = [
             # Pattern 1: Consecutive identical words with space: "나는 나는"
             re.compile(r'\b(\w+)\s+\1\b', re.UNICODE),
-            # Pattern 2: Partial repetitions: "이 이제", "그 그니까" (1-2 characters repeated)
-            re.compile(r'\b(\w{1,2})\s+\1\w+', re.UNICODE),
-            # Pattern 3: Sound repetitions without space: "이-이제", "그-그니까"
-            re.compile(r'\b(\w{1,3})-\1', re.UNICODE),
-            # Pattern 4: Multiple consecutive same words: "음 음 음"
-            re.compile(r'\b(\w+)(\s+\1){2,}', re.UNICODE),
+            # Pattern 2: Partial repetitions (improved): "그 그러니까", "이 이제" (1-2 characters repeated)
+            # More flexible to catch shorter patterns
+            re.compile(r'\b(\w{1,2})(?:\s+|-)?\1', re.UNICODE),
+            # Pattern 3: Sound repetitions without space: "이-이제", "그-그니까", "그그러니까"
+            re.compile(r'\b(\w{1,3})-?\1', re.UNICODE),
+            # Pattern 4: Multiple consecutive same words: "음 음 음", "음 음" (lowered to 1+ repetition)
+            re.compile(r'\b(\w+)(\s+\1){1,}', re.UNICODE),
         ]
         
         for segment in transcript:
@@ -136,6 +138,7 @@ class StutterAnalyzer:
     def _detect_prolongations(self, audio_path: str, transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Analyzes audio for prolonged sounds using word-level timestamps.
+        Now with noise reduction preprocessing for better accuracy.
         
         Args:
             audio_path: Path to the audio file
@@ -147,8 +150,10 @@ class StutterAnalyzer:
         prolongations = []
         
         try:
-            # Load audio file
-            audio, sr = librosa.load(audio_path, sr=self.sr)
+            # Load audio file with noise reduction
+            from .audio_utils import reduce_noise_from_file
+            audio, sr = reduce_noise_from_file(audio_path, sample_rate=self.sr, 
+                                               stationary=True, prop_decrease=0.8)
             
             for segment in transcript:
                 words = segment.get("words", [])
@@ -231,6 +236,7 @@ class StutterAnalyzer:
         Uses context-aware thresholds:
         - Within sentence: 1.0s threshold (stricter)
         - Near sentence end: 1.5s threshold (more relaxed)
+        Now with noise reduction preprocessing for better accuracy.
         
         Args:
             audio_path: Path to the audio file
@@ -242,8 +248,10 @@ class StutterAnalyzer:
         blocks = []
         
         try:
-            # Load audio file
-            audio, sr = librosa.load(audio_path, sr=self.sr)
+            # Load audio file with noise reduction
+            from .audio_utils import reduce_noise_from_file
+            audio, sr = reduce_noise_from_file(audio_path, sample_rate=self.sr,
+                                               stationary=True, prop_decrease=0.8)
             
             for segment in transcript:
                 start = segment.get("start", 0)

@@ -15,6 +15,9 @@ google-cloud-speech
 # Speech analysis
 librosa
 
+# Noise reduction
+noisereduce
+
 # UI visualization and real-time audio streaming
 pygame
 pyaudio

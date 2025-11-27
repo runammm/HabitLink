@@ -34,8 +34,8 @@ class StutterDetector:
                  frame_length: int = 2048,
                  hop_length: int = 512,
                  energy_threshold: float = 0.03,
-                 # Repetition: MFCC correlation >0.92 (research-based)
-                 repetition_similarity_threshold: float = 0.92,
+                 # Repetition: MFCC correlation >0.88 (lowered to catch shorter repetitions like "그그러니까")
+                 repetition_similarity_threshold: float = 0.88,
                  # Prolongation: 800ms absolute threshold (relaxed for real-world use)
                  prolongation_duration_threshold: float = 0.8,
                  # Block (intra-lexical): 150ms within words (research-based)
@@ -43,7 +43,9 @@ class StutterDetector:
                 # Hesitation (inter-lexical): 250ms between words (normal)
                 inter_lexical_silence_threshold: float = 0.25,
                 # Long pause (sentence-ending): 1.5s or more (natural sentence boundary)
-                sentence_pause_threshold: float = 1.5):
+                sentence_pause_threshold: float = 1.5,
+                # Noise reduction settings
+                enable_noise_reduction: bool = True):
         """
         Initialize the real-time stutter detector with research-based thresholds.
         
@@ -52,11 +54,12 @@ class StutterDetector:
             frame_length: Frame length for analysis (default: 2048 samples ≈ 128ms)
             hop_length: Hop length for analysis (default: 512 samples ≈ 32ms)
             energy_threshold: Energy threshold for VAD (Voice Activity Detection)
-            repetition_similarity_threshold: MFCC correlation for repetition (≥0.92)
+            repetition_similarity_threshold: MFCC correlation for repetition (≥0.88, lowered for better detection)
             prolongation_duration_threshold: Minimum duration for prolongation (800ms, relaxed)
             intra_lexical_silence_threshold: Silence threshold within words (150ms)
             inter_lexical_silence_threshold: Silence threshold between words (250ms, normal)
             sentence_pause_threshold: Silence threshold for sentence boundaries (1.5s, normal)
+            enable_noise_reduction: Enable noise reduction preprocessing
         """
         self.sr = sample_rate
         self.frame_length = frame_length
@@ -67,6 +70,7 @@ class StutterDetector:
         self.intra_lexical_threshold = intra_lexical_silence_threshold
         self.inter_lexical_threshold = inter_lexical_silence_threshold
         self.sentence_pause_threshold = sentence_pause_threshold  # 문장 간 긴 쉼
+        self.enable_noise_reduction = enable_noise_reduction
         
         # Sliding window buffer (last 3 seconds of audio)
         self.audio_buffer = deque(maxlen=sample_rate * 3)
@@ -112,6 +116,18 @@ class StutterDetector:
         # Convert buffer to numpy array
         audio = np.array(self.audio_buffer)
         
+        # Apply noise reduction if enabled
+        if self.enable_noise_reduction:
+            try:
+                from .audio_utils import reduce_noise
+                # Convert to float32 for noise reduction
+                audio_float = audio.astype(np.float32) / 32768.0 if audio.dtype == np.int16 else audio
+                audio_float = reduce_noise(audio_float, self.sr, stationary=True, prop_decrease=0.8)
+                # Convert back to original scale
+                audio = audio_float
+            except Exception as e:
+                pass  # Continue with original audio if noise reduction fails
+        
         # Detect repetitions using MFCC correlation
         self._detect_repetitions_mfcc(audio, current_time)
         
@@ -124,12 +140,13 @@ class StutterDetector:
     def _detect_repetitions_mfcc(self, audio: np.ndarray, timestamp: float):
         """
         Detect repetitions using MFCC correlation between consecutive frames.
-        Research criterion: Correlation coefficient >0.92 indicates repetition.
+        Improved to catch shorter repetitions like "그그러니까" (2 repetitions).
+        Uses shorter frames and lower threshold for better sensitivity.
         """
         try:
-            # Use shorter frames (20-40ms) as specified in research
-            frame_size = int(self.sr * 0.03)  # 30ms frames
-            hop_size = int(self.sr * 0.015)   # 15ms hop (50% overlap)
+            # Use even shorter frames (15-25ms) to catch brief repetitions
+            frame_size = int(self.sr * 0.02)  # 20ms frames (reduced from 30ms)
+            hop_size = int(self.sr * 0.01)    # 10ms hop (50% overlap, more granular)
             
             if len(audio) < frame_size * 3:
                 return
@@ -148,6 +165,7 @@ class StutterDetector:
             
             # Compare consecutive frames
             repetition_count = 0
+            repetition_start_idx = None
             last_repetition_time = None
             
             for i in range(mfcc_features.shape[1] - 1):
@@ -164,25 +182,56 @@ class StutterDetector:
                     # Calculate correlation coefficient
                     correlation = np.corrcoef(mfcc1_norm, mfcc2_norm)[0, 1]
                     
-                    # Research criterion: correlation >0.92
+                    # Lowered threshold (0.88 instead of 0.92) to catch shorter repetitions
                     if correlation > self.repetition_threshold:
+                        if repetition_count == 0:
+                            repetition_start_idx = i
                         repetition_count += 1
                         last_repetition_time = i * hop_size / self.sr
                     else:
-                        # Check if we had 2+ consecutive repetitions
-                        if repetition_count >= 2:
-                            event = {
-                                'type': 'repetition',
-                                'timestamp': timestamp - (last_repetition_time or 0),
-                                'count': repetition_count,
-                                'confidence': float(correlation),
-                                'severity': 'severe' if repetition_count >= 4 else 'moderate'
-                            }
+                        # Check if we had enough consecutive repetitions
+                        # Lowered from 2 to 1, but add minimum duration check
+                        if repetition_count >= 1 and repetition_start_idx is not None:
+                            # Calculate duration of the repetition sequence
+                            repetition_duration = (i - repetition_start_idx) * hop_size / self.sr
                             
-                            if not self._is_duplicate_event(event):
-                                self.detected_events.append(event)
+                            # For short repetitions (like "그그"), require at least 80ms
+                            # This filters out very brief correlations that aren't actual repetitions
+                            min_duration = 0.08 if repetition_count < 3 else 0.05
+                            
+                            if repetition_duration >= min_duration:
+                                event = {
+                                    'type': 'repetition',
+                                    'timestamp': timestamp - (last_repetition_time or 0),
+                                    'count': repetition_count,
+                                    'confidence': float(correlation),
+                                    'duration': round(repetition_duration, 3),
+                                    'severity': 'severe' if repetition_count >= 4 else 'moderate'
+                                }
+                                
+                                if not self._is_duplicate_event(event):
+                                    self.detected_events.append(event)
                         
                         repetition_count = 0
+                        repetition_start_idx = None
+            
+            # Check for repetition at the end of the buffer
+            if repetition_count >= 1 and repetition_start_idx is not None:
+                repetition_duration = (mfcc_features.shape[1] - repetition_start_idx) * hop_size / self.sr
+                min_duration = 0.08 if repetition_count < 3 else 0.05
+                
+                if repetition_duration >= min_duration:
+                    event = {
+                        'type': 'repetition',
+                        'timestamp': timestamp - (last_repetition_time or 0),
+                        'count': repetition_count,
+                        'confidence': 0.9,  # Default confidence for end-of-buffer
+                        'duration': round(repetition_duration, 3),
+                        'severity': 'severe' if repetition_count >= 4 else 'moderate'
+                    }
+                    
+                    if not self._is_duplicate_event(event):
+                        self.detected_events.append(event)
         
         except Exception as e:
             pass

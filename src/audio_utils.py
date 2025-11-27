@@ -1,5 +1,76 @@
 import numpy as np
 import librosa
+import noisereduce as nr
+
+
+def reduce_noise(audio_data: np.ndarray, sample_rate: int = 16000, 
+                 stationary: bool = True, prop_decrease: float = 1.0) -> np.ndarray:
+    """
+    Reduce background noise from audio data.
+    
+    Args:
+        audio_data: Audio data as numpy array (float32, range -1.0 to 1.0)
+        sample_rate: Sample rate of the audio
+        stationary: If True, assumes noise is stationary (constant background)
+        prop_decrease: Proportion to reduce noise by (1.0 = full reduction, 0.0 = no reduction)
+    
+    Returns:
+        np.ndarray: Noise-reduced audio data
+    """
+    try:
+        # Ensure audio is in the correct format (float32)
+        if audio_data.dtype != np.float32:
+            audio_data = audio_data.astype(np.float32)
+        
+        # Apply noise reduction
+        # stationary=True is good for constant background noise (AC, fan, etc.)
+        # prop_decrease=1.0 means aggressive noise reduction
+        reduced_audio = nr.reduce_noise(
+            y=audio_data, 
+            sr=sample_rate, 
+            stationary=stationary,
+            prop_decrease=prop_decrease
+        )
+        
+        return reduced_audio
+        
+    except Exception as e:
+        print(f"⚠️ Warning: Noise reduction failed: {e}")
+        # Return original audio if noise reduction fails
+        return audio_data
+
+
+def reduce_noise_from_file(audio_path: str, sample_rate: int = 16000,
+                           stationary: bool = True, prop_decrease: float = 1.0) -> tuple:
+    """
+    Load audio file and reduce background noise.
+    
+    Args:
+        audio_path: Path to the audio file
+        sample_rate: Sample rate to use for loading audio
+        stationary: If True, assumes noise is stationary (constant background)
+        prop_decrease: Proportion to reduce noise by (1.0 = full reduction, 0.0 = no reduction)
+    
+    Returns:
+        tuple: (noise_reduced_audio, sample_rate)
+    """
+    try:
+        # Load audio file
+        audio_data, sr = librosa.load(audio_path, sr=sample_rate)
+        
+        # Reduce noise
+        reduced_audio = reduce_noise(audio_data, sr, stationary, prop_decrease)
+        
+        return reduced_audio, sr
+        
+    except Exception as e:
+        print(f"⚠️ Error loading and reducing noise from file: {e}")
+        # Try to load without noise reduction
+        try:
+            audio_data, sr = librosa.load(audio_path, sr=sample_rate)
+            return audio_data, sr
+        except:
+            raise
 
 
 def detect_speech_duration(audio_path: str, sample_rate: int = 16000, 
