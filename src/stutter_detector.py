@@ -34,8 +34,8 @@ class StutterDetector:
                  frame_length: int = 2048,
                  hop_length: int = 512,
                  energy_threshold: float = 0.03,
-                 # Repetition: MFCC correlation >0.88 (lowered to catch shorter repetitions like "그그러니까")
-                 repetition_similarity_threshold: float = 0.88,
+                 # Repetition: MFCC correlation >0.90 (balanced threshold - catches "그그" but filters false positives)
+                 repetition_similarity_threshold: float = 0.90,
                  # Prolongation: 800ms absolute threshold (relaxed for real-world use)
                  prolongation_duration_threshold: float = 0.8,
                  # Block (intra-lexical): 150ms within words (research-based)
@@ -54,7 +54,7 @@ class StutterDetector:
             frame_length: Frame length for analysis (default: 2048 samples ≈ 128ms)
             hop_length: Hop length for analysis (default: 512 samples ≈ 32ms)
             energy_threshold: Energy threshold for VAD (Voice Activity Detection)
-            repetition_similarity_threshold: MFCC correlation for repetition (≥0.88, lowered for better detection)
+            repetition_similarity_threshold: MFCC correlation for repetition (≥0.90, balanced for accuracy)
             prolongation_duration_threshold: Minimum duration for prolongation (800ms, relaxed)
             intra_lexical_silence_threshold: Silence threshold within words (150ms)
             inter_lexical_silence_threshold: Silence threshold between words (250ms, normal)
@@ -190,14 +190,14 @@ class StutterDetector:
                         last_repetition_time = i * hop_size / self.sr
                     else:
                         # Check if we had enough consecutive repetitions
-                        # Lowered from 2 to 1, but add minimum duration check
-                        if repetition_count >= 1 and repetition_start_idx is not None:
+                        # Require at least 2 consecutive high-correlation frames with minimum duration
+                        if repetition_count >= 2 and repetition_start_idx is not None:
                             # Calculate duration of the repetition sequence
                             repetition_duration = (i - repetition_start_idx) * hop_size / self.sr
                             
-                            # For short repetitions (like "그그"), require at least 80ms
+                            # For short repetitions (like "그그"), require at least 100ms
                             # This filters out very brief correlations that aren't actual repetitions
-                            min_duration = 0.08 if repetition_count < 3 else 0.05
+                            min_duration = 0.10 if repetition_count < 4 else 0.06
                             
                             if repetition_duration >= min_duration:
                                 event = {
@@ -216,9 +216,9 @@ class StutterDetector:
                         repetition_start_idx = None
             
             # Check for repetition at the end of the buffer
-            if repetition_count >= 1 and repetition_start_idx is not None:
+            if repetition_count >= 2 and repetition_start_idx is not None:
                 repetition_duration = (mfcc_features.shape[1] - repetition_start_idx) * hop_size / self.sr
-                min_duration = 0.08 if repetition_count < 3 else 0.05
+                min_duration = 0.10 if repetition_count < 4 else 0.06
                 
                 if repetition_duration >= min_duration:
                     event = {
