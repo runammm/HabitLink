@@ -9,3 +9,10 @@
 
 # Data files
 .data/*
+
+# Models - Exclude large model weight files but keep structure
+models/dialect_binary_classifier/final_model/*.safetensors
+models/dialect_binary_classifier/final_model/*.bin
+models/dialect_binary_classifier/final_model/*.pt
+models/dialect_binary_classifier/final_model/*.pth
+models/dialect_binary_classifier/final_model/*.onnx

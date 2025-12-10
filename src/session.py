@@ -72,6 +72,11 @@ class HabitLinkSession:
         self.speech_rate_text_buffer = []  # Transcripts in current 10s window
         self.last_speech_rate_check = time.time()
         
+        # Dialect detection monitoring (10-second windows)
+        self.dialect_audio_buffer = deque(maxlen=16000 * 10)  # 10 seconds at 16kHz
+        self.dialect_text_buffer = []  # Transcripts in current 10s window
+        self.last_dialect_check = time.time()
+        
         # Store analysis results for summary
         self.all_keyword_detections = []
         self.all_profanity_detections = []
@@ -125,7 +130,8 @@ class HabitLinkSession:
             
             # Initialize dialect analyzer (optional - only if model exists)
             model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "dialect_binary_classifier", "final_model")
-            self.dialect_analyzer = DialectAnalyzer(model_path)
+            vocabulary_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "dialect_vocabulary.txt")
+            self.dialect_analyzer = DialectAnalyzer(model_path, vocabulary_path)
             
             print("✅ Analysis modules initialized")
             
@@ -478,6 +484,20 @@ class HabitLinkSession:
         if self.enabled_analyses["speech_rate"]:
             self.speech_rate_text_buffer.append(text)
         
+        # Add text to dialect buffer (for 10-second window analysis)
+        if self.enabled_analyses["dialect"]:
+            self.dialect_text_buffer.append(text)
+            
+            # Instant vocabulary detection (doesn't wait for 10s window)
+            if self.dialect_analyzer:
+                detected_words = self.dialect_analyzer.detect_dialect_vocabulary(text, transcript_item.get("timestamp"))
+                if detected_words:
+                    for word_info in detected_words:
+                        msg = f"방언 용어 감지: '{word_info['word']}' ({word_info['region']}도)"
+                        print(f"🔔 {msg}")
+                        self.feedback_queue.put(msg)
+                        self.ui_feedback_queue.put({"message": msg, "type": "dialect_vocabulary"})
+        
         loop = asyncio.get_running_loop()
         
         with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -787,6 +807,16 @@ class HabitLinkSession:
                     self._check_speech_rate_10s_window()
                     self.last_speech_rate_check = current_time
             
+            # Add to dialect buffer (for 10-second window analysis)
+            if self.enabled_analyses["dialect"]:
+                self.dialect_audio_buffer.extend(audio_array)
+                
+                # Check if 10 seconds have passed since last dialect check
+                current_time = time.time()
+                if current_time - self.last_dialect_check >= 10.0:
+                    self._check_dialect_10s_window()
+                    self.last_dialect_check = current_time
+            
             # Real-time stutter detection (if enabled)
             if self.enabled_analyses["stutter"] and self.stutter_detector:
                 self.stutter_detector.add_audio_chunk(audio_chunk)
@@ -874,6 +904,60 @@ class HabitLinkSession:
             
         except Exception as e:
             print(f"⚠️ Error in speech rate window check: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _check_dialect_10s_window(self):
+        """
+        Check dialect for the past 10-second window.
+        Combines acoustic analysis (Wav2Vec2) and vocabulary analysis.
+        Provides real-time feedback if non-standard dialect is detected.
+        """
+        try:
+            # Check if we have enough audio data
+            if len(self.dialect_audio_buffer) < 16000 * 3:  # At least 3 seconds
+                return
+            
+            # Get text from buffer
+            combined_text = " ".join(self.dialect_text_buffer) if self.dialect_text_buffer else None
+            
+            # Need at least some text or audio for analysis
+            if not combined_text and len(self.dialect_audio_buffer) < 16000 * 5:
+                self.dialect_text_buffer.clear()
+                return
+            
+            # Convert audio buffer to numpy array
+            audio_data = np.array(self.dialect_audio_buffer, dtype=np.float32) / 32768.0
+            
+            # Analyze segment (acoustic + vocabulary)
+            if self.dialect_analyzer and self.dialect_analyzer.is_available():
+                result = self.dialect_analyzer.analyze_segment_realtime(
+                    audio_array=audio_data,
+                    sample_rate=16000,
+                    timestamp=time.time(),
+                    text=combined_text
+                )
+                
+                # Provide real-time feedback if trigger is set
+                if result.get('feedback_trigger', False):
+                    verdict = result.get('combined_verdict')
+                    confidence = result.get('confidence', 0.0)
+                    
+                    # Acoustic-based feedback
+                    if result.get('acoustic_analysis') and result['acoustic_analysis']['verdict'] == 'non_standard':
+                        msg = f"방언 억양 감지됨 (신뢰도: {confidence*100:.0f}%)"
+                        print(f"🔔 {msg}")
+                        self.feedback_queue.put(msg)
+                        self.ui_feedback_queue.put({"message": msg, "type": "dialect_acoustic"})
+                    
+                    # Vocabulary feedback is already handled in _analyze_fast_only
+            
+            # Clear text buffer for next window
+            # (audio buffer is a deque with maxlen, so it auto-manages)
+            self.dialect_text_buffer.clear()
+            
+        except Exception as e:
+            print(f"⚠️ Error in dialect window check: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1178,69 +1262,203 @@ class HabitLinkSession:
             print("\n--- 🗣️ 방언 분석 요약 (표준어 vs 비표준어) ---")
             
             if self.dialect_analyzer and self.dialect_analyzer.is_available():
+                # 1. Real-time analysis summary
+                print("\n📊 실시간 분석 요약 (10초 단위 세그먼트 분석):")
+                realtime_summary = self.dialect_analyzer.get_realtime_summary()
+                
+                if realtime_summary['total_segments'] > 0:
+                    total_segments = realtime_summary['total_segments']
+                    non_standard_count = realtime_summary['non_standard_count']
+                    non_standard_ratio = realtime_summary['non_standard_ratio']
+                    vocab_count = realtime_summary['vocabulary_detections']
+                    
+                    print(f"  • 분석된 세그먼트: {total_segments}개")
+                    print(f"  • 비표준어 검출: {non_standard_count}개 ({non_standard_ratio*100:.1f}%)")
+                    print(f"  • 방언 어휘 검출: {vocab_count}개")
+                    
+                    # Show detected vocabulary
+                    if vocab_count > 0:
+                        detected_words = realtime_summary['detected_words']
+                        word_counts = defaultdict(int)
+                        region_counts = defaultdict(int)
+                        
+                        for word_info in detected_words:
+                            word_counts[word_info['word']] += 1
+                            region_counts[word_info['region']] += 1
+                        
+                        print(f"\n  🔍 검출된 방언 용어:")
+                        for word, count in sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+                            region = self.dialect_analyzer.dialect_vocab[word][0]
+                            meaning = self.dialect_analyzer.dialect_vocab[word][1]
+                            print(f"    • '{word}' ({region}도, 뜻: {meaning}): {count}회")
+                        
+                        if len(word_counts) > 10:
+                            print(f"    ... 그 외 {len(word_counts) - 10}개 더")
+                        
+                        print(f"\n  📍 지역별 방언 분포:")
+                        for region, count in sorted(region_counts.items(), key=lambda x: x[1], reverse=True):
+                            print(f"    • {region}도: {count}회")
+                    
+                    # Real-time verdict
+                    print(f"\n  ✨ 실시간 분석 판정:")
+                    if non_standard_ratio >= 0.3:  # 30% 이상이 방언
+                        print(f"    ⚠️ 비표준어 (방언 비율: {non_standard_ratio*100:.1f}%)")
+                        print(f"    → 세션 중 방언 특성이 자주 감지되었습니다.")
+                    else:
+                        print(f"    ✅ 표준어 (방언 비율: {non_standard_ratio*100:.1f}%)")
+                        print(f"    → 대체로 표준어를 사용하셨습니다.")
+                else:
+                    print("  실시간 분석 데이터가 없습니다.")
+                
+                # 2. Full session analysis (re-analysis for accuracy)
                 if len(self.audio_buffer) > 0:
                     try:
                         import tempfile
                         import soundfile as sf
                         
-                        # Save entire session audio to temporary file
-                        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-                            temp_audio_path = temp_audio.name
-                            # Convert deque to numpy array
-                            audio_array = np.array(list(self.audio_buffer), dtype=np.int16)
-                            # Save as WAV file
-                            sf.write(temp_audio_path, audio_array, 16000)
+                        # Convert deque to numpy array
+                        audio_array = np.array(list(self.audio_buffer), dtype=np.int16)
+                        total_duration = len(audio_array) / 16000
+                        
+                        print("\n\n📊 전체 세션 재분석 (최종 정밀 판정):")
+                        print(f"  • 전체 오디오 길이: {total_duration:.1f}초 ({total_duration/60:.1f}분)")
+                        
+                        # Split long audio into segments (2 minutes each for optimal analysis)
+                        segment_duration = 120  # 2 minutes in seconds
+                        segment_samples = 16000 * segment_duration  # 2 minutes at 16kHz
+                        
+                        if len(audio_array) > segment_samples:
+                            # Audio is longer than segment_duration, split it
+                            num_segments = (len(audio_array) + segment_samples - 1) // segment_samples
+                            print(f"  • 긴 오디오 감지: {num_segments}개 세그먼트로 분할하여 분석")
                             
-                            print("\n📊 이진 분류 분석 중...")
+                            segment_results = []
                             
-                            # Get binary classification result
-                            classification = self.dialect_analyzer.get_classification(temp_audio_path)
+                            for i in range(num_segments):
+                                start_idx = i * segment_samples
+                                end_idx = min((i + 1) * segment_samples, len(audio_array))
+                                segment = audio_array[start_idx:end_idx]
+                                
+                                # Skip very short segments (< 5 seconds)
+                                if len(segment) < 16000 * 5:
+                                    continue
+                                
+                                # Save segment to temporary file
+                                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                                    temp_audio_path = temp_audio.name
+                                    sf.write(temp_audio_path, segment, 16000)
+                                    
+                                    print(f"    [{i+1}/{num_segments}] 세그먼트 분석 중 ({len(segment)/16000:.1f}초)...")
+                                    
+                                    # Analyze segment
+                                    seg_classification = self.dialect_analyzer.get_classification(temp_audio_path)
+                                    
+                                    # Clean up temp file
+                                    try:
+                                        os.remove(temp_audio_path)
+                                    except:
+                                        pass
+                                    
+                                    if "error" not in seg_classification:
+                                        segment_results.append(seg_classification)
                             
-                            if "error" not in classification:
-                                # Store for report
-                                self.dialect_results = classification
+                            # Aggregate results from all segments
+                            if segment_results:
+                                # Average probabilities across segments
+                                avg_standard = sum(r['probabilities']['standard'] for r in segment_results) / len(segment_results)
+                                avg_non_standard = sum(r['probabilities']['non_standard'] for r in segment_results) / len(segment_results)
                                 
-                                # Extract probabilities
-                                probs = classification.get("probabilities", {})
-                                standard_prob = probs.get("standard", 0.0)
-                                non_standard_prob = probs.get("non_standard", 0.0)
-                                is_standard = classification.get("is_standard", False)
-                                confidence = classification.get("confidence", 0.0)
+                                is_standard = avg_standard > avg_non_standard
+                                confidence = max(avg_standard, avg_non_standard)
                                 
-                                # Display results with bar chart
-                                print("\n📊 확률 분포:")
+                                classification = {
+                                    'is_standard': is_standard,
+                                    'confidence': confidence,
+                                    'probabilities': {
+                                        'standard': avg_standard,
+                                        'non_standard': avg_non_standard
+                                    },
+                                    'num_segments_analyzed': len(segment_results)
+                                }
                                 
-                                # Standard
-                                bar_length_std = int(standard_prob * 50)
-                                bar_std = "█" * bar_length_std + "░" * (50 - bar_length_std)
-                                print(f"  표준어      [{bar_std}] {standard_prob*100:.2f}%")
-                                
-                                # Non-standard
-                                bar_length_non = int(non_standard_prob * 50)
-                                bar_non = "█" * bar_length_non + "░" * (50 - bar_length_non)
-                                print(f"  비표준어    [{bar_non}] {non_standard_prob*100:.2f}%")
-                                
-                                # Final verdict
-                                verdict = "✅ 표준어" if is_standard else "⚠️ 비표준어"
-                                print(f"\n✨ 판정: {verdict} (신뢰도: {confidence*100:.2f}%)")
-                                
-                                # Additional info
-                                if is_standard:
-                                    print("   → 표준어 발음을 사용하고 있습니다.")
-                                else:
-                                    print("   → 방언 특성이 감지되었습니다.")
+                                print(f"  ✅ 분석 완료: {len(segment_results)}개 세그먼트의 평균 결과")
                             else:
-                                print(f"❌ 방언 분석 실패: {classification['error']}")
+                                classification = {"error": "모든 세그먼트 분석 실패"}
+                        else:
+                            # Audio is short enough, analyze as a single file
+                            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                                temp_audio_path = temp_audio.name
+                                sf.write(temp_audio_path, audio_array, 16000)
+                                
+                                print(f"  • 단일 파일로 분석 중...")
+                                
+                                # Get binary classification result
+                                classification = self.dialect_analyzer.get_classification(temp_audio_path)
+                                
+                                # Clean up temp file
+                                try:
+                                    os.remove(temp_audio_path)
+                                except Exception as cleanup_error:
+                                    print(f"  ⚠️ 임시 파일 삭제 실패 (무시됨): {cleanup_error}")
                             
-                            # Clean up temp file
-                            os.remove(temp_audio_path)
+                        if "error" not in classification:
+                            # Store for report
+                            self.dialect_results = classification
+                            self.dialect_results['realtime_summary'] = realtime_summary
+                            
+                            # Extract probabilities
+                            probs = classification.get("probabilities", {})
+                            standard_prob = probs.get("standard", 0.0)
+                            non_standard_prob = probs.get("non_standard", 0.0)
+                            is_standard = classification.get("is_standard", False)
+                            confidence = classification.get("confidence", 0.0)
+                            num_segments = classification.get("num_segments_analyzed")
+                            
+                            # Display results with bar chart
+                            print("\n  확률 분포:")
+                            if num_segments:
+                                print(f"  ({num_segments}개 세그먼트 평균)")
+                            
+                            # Standard
+                            bar_length_std = int(standard_prob * 50)
+                            bar_std = "█" * bar_length_std + "░" * (50 - bar_length_std)
+                            print(f"    표준어      [{bar_std}] {standard_prob*100:.2f}%")
+                            
+                            # Non-standard
+                            bar_length_non = int(non_standard_prob * 50)
+                            bar_non = "█" * bar_length_non + "░" * (50 - bar_length_non)
+                            print(f"    비표준어    [{bar_non}] {non_standard_prob*100:.2f}%")
+                            
+                            # Final verdict
+                            verdict = "✅ 표준어" if is_standard else "⚠️ 비표준어"
+                            print(f"\n  ✨ 최종 판정: {verdict} (신뢰도: {confidence*100:.2f}%)")
+                            
+                            # Additional info
+                            if is_standard:
+                                print("    → 전체적으로 표준어 발음을 사용하고 있습니다.")
+                            else:
+                                print("    → 전체적으로 방언 특성이 감지되었습니다.")
+                            
+                            # Compare with real-time analysis
+                            print(f"\n  📈 실시간 vs 전체 분석 비교:")
+                            realtime_verdict = "비표준어" if realtime_summary['non_standard_ratio'] >= 0.3 else "표준어"
+                            final_verdict = "비표준어" if not is_standard else "표준어"
+                            
+                            if realtime_verdict == final_verdict:
+                                print(f"    ✓ 일치: 두 분석 모두 '{final_verdict}' 판정")
+                                print(f"      신뢰도가 높은 결과입니다.")
+                            else:
+                                print(f"    ⚠ 불일치: 실시간({realtime_verdict}) vs 전체({final_verdict})")
+                                print(f"      전체 분석 결과를 더 신뢰할 수 있습니다.")
+                        else:
+                            print(f"  ❌ 방언 분석 실패: {classification['error']}")
                     
                     except Exception as e:
                         print(f"❌ 방언 분석 중 오류 발생: {e}")
                         import traceback
                         traceback.print_exc()
                 else:
-                    print("분석할 오디오 데이터가 없습니다.")
+                    print("\n분석할 오디오 데이터가 없습니다.")
             else:
                 print("방언 분석 모델이 로드되지 않았습니다.")
         

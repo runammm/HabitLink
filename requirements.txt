@@ -25,14 +25,20 @@ pyaudio
 # PDF report generation
 reportlab
 
-# Dialect Analysis (AI Model) - Optional
-# Install these only if you plan to use dialect detection feature
+# Dialect Analysis (AI Model) - Required for dialect detection
+# These packages are needed for the integrated dialect detection system
+# Uncomment the lines below to install:
 # transformers>=4.30.0
 # torch>=2.0.0
+
+# Additional packages for model training (optional, only if you train the model yourself)
 # datasets>=2.14.0
 # accelerate>=0.20.0
 # evaluate>=0.4.0
 # scikit-learn>=1.3.0
 
-# Note: Uncomment the above lines and run 'pip install -r requirements.txt'
-# if you want to train and use the dialect detection model
+# Installation instructions:
+# 1. For dialect detection only: pip install transformers torch
+# 2. For full model training: uncomment all lines above and run 'pip install -r requirements.txt'
+#
+# Note: The dialect detection model requires ~1.2GB disk space and ~1.5GB RAM when loaded

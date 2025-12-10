@@ -98,7 +98,7 @@ HabitLink uses a multi-threaded streaming architecture:
    ```
 
 6. **Prepare profanity list:**
-   - Create `.data/profanity_list_ko.txt` with Korean profanity words (one per line)
+   - Create `resources/profanity_list_ko.txt` with Korean profanity words (one per line)
 
 7. **(Optional) Set up Dialect Detection:**
    - Follow the guide in `DIALECT_BINARY_GUIDE.md` for binary classification

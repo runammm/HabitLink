@@ -161,6 +161,7 @@ class ReportGenerator:
             self._add_grammar_analysis(story, session_data)
             self._add_context_analysis(story, session_data)
             self._add_stutter_analysis(story, session_data)
+            self._add_dialect_analysis(story, session_data)
             
             # Build PDF
             doc.build(story)
@@ -205,7 +206,8 @@ class ReportGenerator:
                 "speech_rate": "Speech Rate Analysis",
                 "grammar": "Grammar Analysis",
                 "context": "Context Analysis",
-                "stutter": "Stutter Analysis"
+                "stutter": "Stutter Analysis",
+                "dialect": "Dialect Analysis"
             }
             
             for key, value in enabled_analyses.items():
@@ -560,6 +562,158 @@ class ReportGenerator:
         
         if not detector_events and not stutter_results:
             story.append(Paragraph("No stuttering events detected.", self.styles['CustomBody']))
+        
+        story.append(Spacer(1, 0.2*inch))
+    
+    def _add_dialect_analysis(self, story: List, session_data: Dict[str, Any]):
+        """Add dialect analysis."""
+        enabled = session_data.get("enabled_analyses", {}).get("dialect", False)
+        if not enabled:
+            return
+        
+        story.append(Paragraph("Dialect Analysis (Standard vs Non-Standard Korean)", self.styles['SectionHeading']))
+        
+        dialect_results = session_data.get("dialect_results", {})
+        
+        if not dialect_results:
+            story.append(Paragraph("No dialect analysis data available.", self.styles['CustomBody']))
+            story.append(Spacer(1, 0.2*inch))
+            return
+        
+        # 1. Real-time analysis summary
+        realtime_summary = dialect_results.get("realtime_summary", {})
+        
+        if realtime_summary and realtime_summary.get('total_segments', 0) > 0:
+            story.append(Paragraph("<b>Real-time Analysis (10-second segments):</b>", self.styles['CustomBodyBold']))
+            story.append(Spacer(1, 0.05*inch))
+            
+            total_segments = realtime_summary['total_segments']
+            non_standard_count = realtime_summary['non_standard_count']
+            non_standard_ratio = realtime_summary['non_standard_ratio']
+            vocab_count = realtime_summary['vocabulary_detections']
+            
+            story.append(Paragraph(f"Analyzed segments: {total_segments}", self.styles['CustomBody']))
+            story.append(Paragraph(f"Non-standard detected: {non_standard_count} ({non_standard_ratio*100:.1f}%)", self.styles['CustomBody']))
+            story.append(Paragraph(f"Dialect vocabulary detected: {vocab_count} words", self.styles['CustomBody']))
+            story.append(Spacer(1, 0.05*inch))
+            
+            # Show detected vocabulary
+            if vocab_count > 0:
+                detected_words = realtime_summary.get('detected_words', [])
+                if detected_words:
+                    word_counts = defaultdict(int)
+                    word_info_map = {}
+                    
+                    for word_info in detected_words:
+                        word = word_info['word']
+                        word_counts[word] += 1
+                        if word not in word_info_map:
+                            word_info_map[word] = word_info
+                    
+                    story.append(Paragraph("<b>Detected dialect words:</b>", self.styles['CustomBodyBold']))
+                    
+                    for word, count in sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+                        info = word_info_map[word]
+                        region = info['region']
+                        meaning = info['standard_meaning']
+                        
+                        word_escaped = word.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        meaning_escaped = meaning.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        
+                        story.append(Paragraph(
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;'{word_escaped}' ({region} dialect, meaning: {meaning_escaped}): {count} times",
+                            self.styles['CustomBody']
+                        ))
+                    
+                    if len(word_counts) > 10:
+                        story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;... and {len(word_counts) - 10} more", self.styles['CustomBody']))
+                    
+                    story.append(Spacer(1, 0.05*inch))
+            
+            # Real-time verdict
+            story.append(Paragraph("<b>Real-time verdict:</b>", self.styles['CustomBodyBold']))
+            if non_standard_ratio >= 0.3:
+                story.append(Paragraph(
+                    f"Non-standard Korean (dialect ratio: {non_standard_ratio*100:.1f}%)",
+                    self.styles['CustomBody']
+                ))
+                story.append(Paragraph(
+                    "Dialect characteristics were frequently detected during the session.",
+                    self.styles['CustomBody']
+                ))
+            else:
+                story.append(Paragraph(
+                    f"Standard Korean (dialect ratio: {non_standard_ratio*100:.1f}%)",
+                    self.styles['CustomBody']
+                ))
+                story.append(Paragraph(
+                    "Primarily standard Korean was used.",
+                    self.styles['CustomBody']
+                ))
+            
+            story.append(Spacer(1, 0.1*inch))
+        
+        # 2. Full session analysis
+        probs = dialect_results.get("probabilities", {})
+        if probs:
+            story.append(Paragraph("<b>Full Session Analysis (Final verdict):</b>", self.styles['CustomBodyBold']))
+            story.append(Spacer(1, 0.05*inch))
+            
+            standard_prob = probs.get("standard", 0.0)
+            non_standard_prob = probs.get("non_standard", 0.0)
+            is_standard = dialect_results.get("is_standard", False)
+            confidence = dialect_results.get("confidence", 0.0)
+            
+            # Probability distribution
+            story.append(Paragraph("<b>Probability distribution:</b>", self.styles['CustomBodyBold']))
+            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;Standard: {standard_prob*100:.2f}%", self.styles['CustomBody']))
+            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;Non-standard: {non_standard_prob*100:.2f}%", self.styles['CustomBody']))
+            story.append(Spacer(1, 0.05*inch))
+            
+            # Final verdict
+            verdict = "Standard Korean" if is_standard else "Non-Standard Korean (Dialect)"
+            story.append(Paragraph(f"<b>Final verdict:</b> {verdict}", self.styles['CustomBodyBold']))
+            story.append(Paragraph(f"Confidence: {confidence*100:.2f}%", self.styles['CustomBody']))
+            story.append(Spacer(1, 0.05*inch))
+            
+            # Interpretation
+            if is_standard:
+                story.append(Paragraph(
+                    "Overall, you are using standard Korean pronunciation.",
+                    self.styles['CustomBody']
+                ))
+            else:
+                story.append(Paragraph(
+                    "Overall, dialect characteristics were detected in your speech.",
+                    self.styles['CustomBody']
+                ))
+            
+            # Comparison with real-time
+            if realtime_summary and realtime_summary.get('total_segments', 0) > 0:
+                story.append(Spacer(1, 0.05*inch))
+                story.append(Paragraph("<b>Real-time vs Full analysis comparison:</b>", self.styles['CustomBodyBold']))
+                
+                realtime_verdict = "Non-standard" if realtime_summary['non_standard_ratio'] >= 0.3 else "Standard"
+                final_verdict = "Non-standard" if not is_standard else "Standard"
+                
+                if realtime_verdict == final_verdict:
+                    story.append(Paragraph(
+                        f"Match: Both analyses determined '{final_verdict}' Korean.",
+                        self.styles['CustomBody']
+                    ))
+                    story.append(Paragraph(
+                        "This indicates high confidence in the result.",
+                        self.styles['CustomBody']
+                    ))
+                else:
+                    story.append(Paragraph(
+                        f"Mismatch: Real-time ({realtime_verdict}) vs Full ({final_verdict})",
+                        self.styles['CustomBody']
+                    ))
+                    story.append(Paragraph(
+                        "The full analysis result is more reliable.",
+                        self.styles['CustomBody']
+                    ))
         
         story.append(Spacer(1, 0.2*inch))
     

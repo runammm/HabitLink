@@ -33,13 +33,13 @@ class StutterDetector:
                  sample_rate: int = 16000,
                  frame_length: int = 2048,
                  hop_length: int = 512,
-                 energy_threshold: float = 0.03,
-                 # Repetition: MFCC correlation >0.90 (balanced threshold - catches "그그" but filters false positives)
-                 repetition_similarity_threshold: float = 0.90,
-                 # Prolongation: 800ms absolute threshold (relaxed for real-world use)
-                 prolongation_duration_threshold: float = 0.8,
-                 # Block (intra-lexical): 150ms within words (research-based)
-                 intra_lexical_silence_threshold: float = 0.15,
+                 energy_threshold: float = 0.01,  # Lowered for better sensitivity after noise reduction
+                 # Repetition: MFCC correlation >0.85 (relaxed from 0.92)
+                 repetition_similarity_threshold: float = 0.85,
+                 # Prolongation: 500ms absolute threshold (slightly stricter)
+                 prolongation_duration_threshold: float = 0.5,
+                 # Block (intra-lexical): 80ms within words (relaxed from 150ms)
+                 intra_lexical_silence_threshold: float = 0.08,
                 # Hesitation (inter-lexical): 250ms between words (normal)
                 inter_lexical_silence_threshold: float = 0.25,
                 # Long pause (sentence-ending): 1.5s or more (natural sentence boundary)
@@ -54,9 +54,9 @@ class StutterDetector:
             frame_length: Frame length for analysis (default: 2048 samples ≈ 128ms)
             hop_length: Hop length for analysis (default: 512 samples ≈ 32ms)
             energy_threshold: Energy threshold for VAD (Voice Activity Detection)
-            repetition_similarity_threshold: MFCC correlation for repetition (≥0.90, balanced for accuracy)
-            prolongation_duration_threshold: Minimum duration for prolongation (800ms, relaxed)
-            intra_lexical_silence_threshold: Silence threshold within words (150ms)
+            repetition_similarity_threshold: MFCC correlation for repetition (≥0.85, relaxed)
+            prolongation_duration_threshold: Minimum duration for prolongation (500ms, balanced)
+            intra_lexical_silence_threshold: Silence threshold within words (80ms, relaxed)
             inter_lexical_silence_threshold: Silence threshold between words (250ms, normal)
             sentence_pause_threshold: Silence threshold for sentence boundaries (1.5s, normal)
             enable_noise_reduction: Enable noise reduction preprocessing
@@ -139,100 +139,238 @@ class StutterDetector:
     
     def _detect_repetitions_mfcc(self, audio: np.ndarray, timestamp: float):
         """
-        Detect repetitions using MFCC correlation between consecutive frames.
-        Improved to catch shorter repetitions like "그그러니까" (2 repetitions).
-        Uses shorter frames and lower threshold for better sensitivity.
+        Detect repetitions using Onset Detection + Segment Comparison.
+        
+        New approach (redesigned):
+        1. Detect syllable onsets (start points of each sound unit)
+        2. Extract segments between onsets
+        3. Compare adjacent segments using MFCC similarity
+        4. If similar segments repeat consecutively, it's a repetition
+        
+        This catches fast repetitions like "이이이거", "봐봐봐라" that the
+        old consecutive-frame approach couldn't detect.
         """
         try:
-            # Use even shorter frames (15-25ms) to catch brief repetitions
-            frame_size = int(self.sr * 0.02)  # 20ms frames (reduced from 30ms)
-            hop_size = int(self.sr * 0.01)    # 10ms hop (50% overlap, more granular)
-            
-            if len(audio) < frame_size * 3:
+            # Need at least 200ms of audio
+            if len(audio) < self.sr * 0.2:
                 return
             
-            # Extract MFCC features for all frames
-            mfcc_features = librosa.feature.mfcc(
-                y=audio, 
-                sr=self.sr, 
-                n_mfcc=13,
-                n_fft=frame_size * 2,
-                hop_length=hop_size
+            # ===== Method 1: Onset-based Segment Comparison =====
+            self._detect_repetitions_onset_based(audio, timestamp)
+            
+            # ===== Method 2: Self-Similarity Matrix (backup) =====
+            self._detect_repetitions_self_similarity(audio, timestamp)
+            
+        except Exception as e:
+            pass
+    
+    def _detect_repetitions_onset_based(self, audio: np.ndarray, timestamp: float):
+        """
+        Onset-based repetition detection.
+        Detects syllable boundaries and compares adjacent syllables.
+        """
+        try:
+            # Detect onsets (syllable start points)
+            # Use a sensitive onset detector for fast repetitions
+            onset_frames = librosa.onset.onset_detect(
+                y=audio,
+                sr=self.sr,
+                units='frames',
+                hop_length=256,  # Finer resolution
+                backtrack=True,
+                pre_max=3,
+                post_max=3,
+                pre_avg=3,
+                post_avg=5,
+                delta=0.05,  # More sensitive
+                wait=2  # Minimum 2 frames between onsets (~32ms at 256 hop)
             )
             
-            # Calculate RMS energy for each frame to filter silence
-            rms = librosa.feature.rms(y=audio, frame_length=frame_size, hop_length=hop_size)[0]
+            # Convert frames to samples
+            onset_samples = librosa.frames_to_samples(onset_frames, hop_length=256)
             
-            # Compare consecutive frames
+            # Need at least 3 onsets to detect repetition (2 segments to compare)
+            if len(onset_samples) < 3:
+                return
+            
+            # Extract MFCC for each segment between onsets
+            segments_mfcc = []
+            segment_times = []
+            
+            for i in range(len(onset_samples) - 1):
+                start = onset_samples[i]
+                end = onset_samples[i + 1]
+                
+                # Skip very short or very long segments
+                segment_duration = (end - start) / self.sr
+                if segment_duration < 0.03 or segment_duration > 0.5:
+                    continue
+                
+                segment = audio[start:end]
+                
+                # Check if segment has enough energy (not silence)
+                segment_energy = np.sqrt(np.mean(segment ** 2))
+                if segment_energy < self.energy_threshold:
+                    continue
+                
+                # Extract MFCC for this segment
+                mfcc = librosa.feature.mfcc(
+                    y=segment,
+                    sr=self.sr,
+                    n_mfcc=13,
+                    n_fft=min(512, len(segment)),
+                    hop_length=min(256, len(segment) // 2)
+                )
+                
+                # Average MFCC across time to get a single feature vector per segment
+                mfcc_mean = np.mean(mfcc, axis=1)
+                segments_mfcc.append(mfcc_mean)
+                segment_times.append(start / self.sr)
+            
+            # Need at least 2 segments to compare
+            if len(segments_mfcc) < 2:
+                return
+            
+            # Compare adjacent segments
             repetition_count = 0
-            repetition_start_idx = None
-            last_repetition_time = None
+            repetition_start_time = None
             
-            for i in range(mfcc_features.shape[1] - 1):
-                # Only analyze frames with sufficient energy (speech)
-                if rms[i] > self.energy_threshold and rms[i+1] > self.energy_threshold:
-                    # Get MFCC vectors for consecutive frames
-                    mfcc1 = mfcc_features[:, i]
-                    mfcc2 = mfcc_features[:, i + 1]
+            for i in range(len(segments_mfcc) - 1):
+                mfcc1 = segments_mfcc[i]
+                mfcc2 = segments_mfcc[i + 1]
+                
+                # Normalize
+                mfcc1_norm = (mfcc1 - np.mean(mfcc1)) / (np.std(mfcc1) + 1e-8)
+                mfcc2_norm = (mfcc2 - np.mean(mfcc2)) / (np.std(mfcc2) + 1e-8)
+                
+                # Calculate similarity (correlation)
+                similarity = np.corrcoef(mfcc1_norm, mfcc2_norm)[0, 1]
+                
+                # Also calculate cosine similarity as backup
+                cosine_sim = np.dot(mfcc1_norm, mfcc2_norm) / (
+                    np.linalg.norm(mfcc1_norm) * np.linalg.norm(mfcc2_norm) + 1e-8
+                )
+                
+                # Use the higher of the two similarities
+                max_similarity = max(similarity, cosine_sim) if not np.isnan(similarity) else cosine_sim
+                
+                # Threshold for segment similarity (more lenient than frame comparison)
+                if max_similarity > self.repetition_threshold:
+                    if repetition_count == 0:
+                        repetition_start_time = segment_times[i]
+                    repetition_count += 1
+                else:
+                    # End of repetition sequence
+                    if repetition_count >= 1:  # Even 2 similar segments is a repetition
+                        event = {
+                            'type': 'repetition',
+                            'timestamp': timestamp - (len(audio) / self.sr) + (repetition_start_time or 0),
+                            'count': repetition_count + 1,  # +1 because count is comparisons, not segments
+                            'confidence': float(max_similarity),
+                            'method': 'onset_based',
+                            'severity': 'severe' if repetition_count >= 3 else 'moderate'
+                        }
+                        
+                        if not self._is_duplicate_event(event):
+                            self.detected_events.append(event)
                     
-                    # Normalize vectors
+                    repetition_count = 0
+                    repetition_start_time = None
+            
+            # Check for repetition at end of buffer
+            if repetition_count >= 1:
+                event = {
+                    'type': 'repetition',
+                    'timestamp': timestamp - (len(audio) / self.sr) + (repetition_start_time or 0),
+                    'count': repetition_count + 1,
+                    'confidence': 0.85,
+                    'method': 'onset_based',
+                    'severity': 'severe' if repetition_count >= 3 else 'moderate'
+                }
+                
+                if not self._is_duplicate_event(event):
+                    self.detected_events.append(event)
+                    
+        except Exception as e:
+            pass
+    
+    def _detect_repetitions_self_similarity(self, audio: np.ndarray, timestamp: float):
+        """
+        Self-similarity matrix based repetition detection.
+        Looks for diagonal patterns indicating repeated sounds.
+        """
+        try:
+            # Extract MFCC with fine resolution
+            hop_length = 256
+            mfcc = librosa.feature.mfcc(
+                y=audio,
+                sr=self.sr,
+                n_mfcc=13,
+                n_fft=1024,
+                hop_length=hop_length
+            )
+            
+            # Calculate RMS for energy filtering
+            rms = librosa.feature.rms(y=audio, frame_length=1024, hop_length=hop_length)[0]
+            
+            # Find frames with enough energy
+            active_frames = np.where(rms > self.energy_threshold)[0]
+            
+            if len(active_frames) < 4:
+                return
+            
+            # Build self-similarity matrix for active frames only
+            # Look for repetitions with stride (comparing frame i with frame i+stride)
+            min_stride = 3   # Minimum ~48ms apart (at 256 hop, 16kHz)
+            max_stride = 15  # Maximum ~240ms apart
+            
+            for stride in range(min_stride, max_stride + 1):
+                repetition_count = 0
+                repetition_start_frame = None
+                
+                for i in range(len(active_frames) - stride):
+                    frame_idx1 = active_frames[i]
+                    frame_idx2 = active_frames[i] + stride
+                    
+                    if frame_idx2 >= mfcc.shape[1]:
+                        break
+                    
+                    # Check if both frames have energy
+                    if rms[frame_idx1] < self.energy_threshold or rms[frame_idx2] < self.energy_threshold:
+                        continue
+                    
+                    mfcc1 = mfcc[:, frame_idx1]
+                    mfcc2 = mfcc[:, frame_idx2]
+                    
+                    # Normalize
                     mfcc1_norm = (mfcc1 - np.mean(mfcc1)) / (np.std(mfcc1) + 1e-8)
                     mfcc2_norm = (mfcc2 - np.mean(mfcc2)) / (np.std(mfcc2) + 1e-8)
                     
-                    # Calculate correlation coefficient
-                    correlation = np.corrcoef(mfcc1_norm, mfcc2_norm)[0, 1]
+                    # Calculate similarity
+                    similarity = np.corrcoef(mfcc1_norm, mfcc2_norm)[0, 1]
                     
-                    # Lowered threshold (0.88 instead of 0.92) to catch shorter repetitions
-                    if correlation > self.repetition_threshold:
+                    if not np.isnan(similarity) and similarity > self.repetition_threshold:
                         if repetition_count == 0:
-                            repetition_start_idx = i
+                            repetition_start_frame = frame_idx1
                         repetition_count += 1
-                        last_repetition_time = i * hop_size / self.sr
                     else:
-                        # Check if we had enough consecutive repetitions
-                        # Require at least 2 consecutive high-correlation frames with minimum duration
-                        if repetition_count >= 2 and repetition_start_idx is not None:
-                            # Calculate duration of the repetition sequence
-                            repetition_duration = (i - repetition_start_idx) * hop_size / self.sr
+                        if repetition_count >= 3:  # Need at least 3 matching pairs
+                            event = {
+                                'type': 'repetition',
+                                'timestamp': timestamp - (len(audio) / self.sr) + (repetition_start_frame * hop_length / self.sr),
+                                'count': repetition_count,
+                                'confidence': float(similarity) if not np.isnan(similarity) else 0.8,
+                                'method': 'self_similarity',
+                                'stride_ms': round(stride * hop_length / self.sr * 1000, 1),
+                                'severity': 'severe' if repetition_count >= 5 else 'moderate'
+                            }
                             
-                            # For short repetitions (like "그그"), require at least 100ms
-                            # This filters out very brief correlations that aren't actual repetitions
-                            min_duration = 0.10 if repetition_count < 4 else 0.06
-                            
-                            if repetition_duration >= min_duration:
-                                event = {
-                                    'type': 'repetition',
-                                    'timestamp': timestamp - (last_repetition_time or 0),
-                                    'count': repetition_count,
-                                    'confidence': float(correlation),
-                                    'duration': round(repetition_duration, 3),
-                                    'severity': 'severe' if repetition_count >= 4 else 'moderate'
-                                }
-                                
-                                if not self._is_duplicate_event(event):
-                                    self.detected_events.append(event)
+                            if not self._is_duplicate_event(event):
+                                self.detected_events.append(event)
                         
                         repetition_count = 0
-                        repetition_start_idx = None
-            
-            # Check for repetition at the end of the buffer
-            if repetition_count >= 2 and repetition_start_idx is not None:
-                repetition_duration = (mfcc_features.shape[1] - repetition_start_idx) * hop_size / self.sr
-                min_duration = 0.10 if repetition_count < 4 else 0.06
-                
-                if repetition_duration >= min_duration:
-                    event = {
-                        'type': 'repetition',
-                        'timestamp': timestamp - (last_repetition_time or 0),
-                        'count': repetition_count,
-                        'confidence': 0.9,  # Default confidence for end-of-buffer
-                        'duration': round(repetition_duration, 3),
-                        'severity': 'severe' if repetition_count >= 4 else 'moderate'
-                    }
-                    
-                    if not self._is_duplicate_event(event):
-                        self.detected_events.append(event)
-        
+                        repetition_start_frame = None
+                        
         except Exception as e:
             pass
     
@@ -262,7 +400,8 @@ class StutterDetector:
             for i in range(len(zcr)):
                 # Low ZCR indicates sustained sound (vowels, fricatives)
                 # Sufficient energy indicates active speech
-                is_sustained = (zcr[i] < 0.08 and rms[i] > self.energy_threshold * 1.2)
+                # ZCR threshold set to 0.12 (balanced)
+                is_sustained = (zcr[i] < 0.12 and rms[i] > self.energy_threshold * 1.2)
                 
                 if is_sustained:
                     sustained_frames += 1
@@ -354,8 +493,9 @@ class StutterDetector:
                                 self.detected_events.append(event)
                     else:
                         # Inter-lexical: ≥250ms might be normal hesitation
-                        # Only flag if it's unusually long (>500ms), but not too long (sentence boundary)
-                        if gap_duration >= 0.5:
+                        # Only flag if it's unusually long (>300ms), but not too long (sentence boundary)
+                        # Relaxed from 500ms to 300ms
+                        if gap_duration >= 0.30:
                             event = {
                                 'type': 'block',
                                 'timestamp': timestamp - ((len(audio) - speech1_end) / self.sr),

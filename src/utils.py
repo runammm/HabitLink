@@ -1,6 +1,6 @@
 from typing import List
 
-def load_profanity_list(path: str = ".data/profanity_list_ko.txt") -> List[str]:
+def load_profanity_list(path: str = "resources/profanity_list_ko.txt") -> List[str]:
     try:
         with open(path, 'r', encoding='utf-8') as f:
             # Read lines, strip whitespace, and filter out empty lines
