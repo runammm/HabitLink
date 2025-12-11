@@ -157,8 +157,21 @@ class DialectAnalyzer:
             for p in predictions:
                 print(f"     • {p['label']}: {p['score']*100:.2f}%")
             
-            # Format the output into a simple dictionary
-            probabilities = {p['label']: round(p['score'], 4) for p in predictions}
+            # Format the output into a simple dictionary with normalized lowercase keys
+            probabilities = {}
+            for p in predictions:
+                label = p['label']
+                # Normalize labels to lowercase and replace hyphen with underscore
+                if label in ['Non-Standard', 'LABEL_1']:
+                    normalized_label = 'non_standard'
+                elif label in ['Standard', 'LABEL_0']:
+                    normalized_label = 'standard'
+                else:
+                    # Keep original but normalize to lowercase with underscore
+                    normalized_label = label.lower().replace('-', '_')
+                
+                probabilities[normalized_label] = round(p['score'], 4)
+            
             return probabilities
             
         except Exception as e:
@@ -254,13 +267,14 @@ class DialectAnalyzer:
         """
         return self.model_loaded and self.classifier is not None
     
-    def detect_dialect_vocabulary(self, text: str, timestamp: Optional[float] = None) -> List[Dict]:
+    def detect_dialect_vocabulary(self, text: str, timestamp: Optional[float] = None, is_final: bool = False) -> List[Dict]:
         """
         Detect dialect vocabulary in transcribed text.
         
         Args:
             text (str): Transcribed text to analyze
             timestamp (float, optional): Timestamp of the text
+            is_final (bool): Whether this is a final result (prevents duplicate detection)
             
         Returns:
             List[Dict]: List of detected dialect words with metadata
@@ -275,17 +289,29 @@ class DialectAnalyzer:
             matches = pattern.finditer(text)
             for match in matches:
                 region, meaning = self.dialect_vocab[word]
-                detected.append({
+                word_info = {
                     'word': word,
                     'region': region,
                     'standard_meaning': meaning,
                     'position': match.start(),
                     'timestamp': timestamp,
                     'context': text[max(0, match.start()-10):min(len(text), match.end()+10)]
-                })
-        
-        # Store in detected vocabulary
-        self.detected_vocabulary.extend(detected)
+                }
+                
+                # For final results, check for duplicates before adding
+                if is_final:
+                    # Check if already detected in vocabulary
+                    is_duplicate = any(
+                        v['word'] == word and 
+                        abs((v.get('timestamp', 0) or 0) - (timestamp or 0)) < 2.0
+                        for v in self.detected_vocabulary
+                    )
+                    
+                    if not is_duplicate:
+                        detected.append(word_info)
+                        self.detected_vocabulary.append(word_info)
+                else:
+                    detected.append(word_info)
         
         return detected
     
@@ -359,14 +385,14 @@ class DialectAnalyzer:
         
         # 3. Combined verdict
         # Priority: If vocabulary detected, it's non-standard
-        # Otherwise, use acoustic analysis with 70% threshold to reduce false positives
+        # Otherwise, use acoustic analysis with 85% threshold to reduce false positives
         if result['vocabulary_analysis'] and result['vocabulary_analysis']['count'] > 0:
             result['combined_verdict'] = 'non_standard'
             result['confidence'] = 0.9  # High confidence for vocabulary match
             result['feedback_trigger'] = True
         elif result['acoustic_analysis']:
             acoustic = result['acoustic_analysis']
-            if acoustic['non_standard_prob'] >= 0.70:  # 70% threshold
+            if acoustic['non_standard_prob'] >= 0.85:  # 85% threshold for high confidence
                 result['combined_verdict'] = 'non_standard'
                 result['confidence'] = acoustic['non_standard_prob']
                 result['feedback_trigger'] = True

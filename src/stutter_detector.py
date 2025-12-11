@@ -33,13 +33,13 @@ class StutterDetector:
                  sample_rate: int = 16000,
                  frame_length: int = 2048,
                  hop_length: int = 512,
-                 energy_threshold: float = 0.01,  # Lowered for better sensitivity after noise reduction
-                 # Repetition: MFCC correlation >0.85 (relaxed from 0.92)
-                 repetition_similarity_threshold: float = 0.85,
-                 # Prolongation: 500ms absolute threshold (slightly stricter)
-                 prolongation_duration_threshold: float = 0.5,
-                 # Block (intra-lexical): 80ms within words (relaxed from 150ms)
-                 intra_lexical_silence_threshold: float = 0.08,
+                 energy_threshold: float = 0.02,  # Energy threshold for VAD
+                 # Repetition: MFCC correlation >0.96 (slightly relaxed from 0.98)
+                 repetition_similarity_threshold: float = 0.96,
+                 # Prolongation: 800ms absolute threshold (stricter - research-based)
+                 prolongation_duration_threshold: float = 0.8,
+                 # Block (intra-lexical): 130ms within words (slightly relaxed from 150ms)
+                 intra_lexical_silence_threshold: float = 0.13,
                 # Hesitation (inter-lexical): 250ms between words (normal)
                 inter_lexical_silence_threshold: float = 0.25,
                 # Long pause (sentence-ending): 1.5s or more (natural sentence boundary)
@@ -54,9 +54,9 @@ class StutterDetector:
             frame_length: Frame length for analysis (default: 2048 samples ≈ 128ms)
             hop_length: Hop length for analysis (default: 512 samples ≈ 32ms)
             energy_threshold: Energy threshold for VAD (Voice Activity Detection)
-            repetition_similarity_threshold: MFCC correlation for repetition (≥0.85, relaxed)
-            prolongation_duration_threshold: Minimum duration for prolongation (500ms, balanced)
-            intra_lexical_silence_threshold: Silence threshold within words (80ms, relaxed)
+            repetition_similarity_threshold: MFCC correlation for repetition (≥0.96, strict)
+            prolongation_duration_threshold: Minimum duration for prolongation (800ms, stricter)
+            intra_lexical_silence_threshold: Silence threshold within words (130ms, slightly relaxed)
             inter_lexical_silence_threshold: Silence threshold between words (250ms, normal)
             sentence_pause_threshold: Silence threshold for sentence boundaries (1.5s, normal)
             enable_noise_reduction: Enable noise reduction preprocessing
@@ -156,10 +156,11 @@ class StutterDetector:
                 return
             
             # ===== Method 1: Onset-based Segment Comparison =====
+            # Only use onset-based method (self_similarity causes too many false positives)
             self._detect_repetitions_onset_based(audio, timestamp)
             
-            # ===== Method 2: Self-Similarity Matrix (backup) =====
-            self._detect_repetitions_self_similarity(audio, timestamp)
+            # ===== Method 2: Self-Similarity Matrix (DISABLED - too many false positives) =====
+            # self._detect_repetitions_self_similarity(audio, timestamp)
             
         except Exception as e:
             pass
@@ -182,8 +183,8 @@ class StutterDetector:
                 post_max=3,
                 pre_avg=3,
                 post_avg=5,
-                delta=0.05,  # More sensitive
-                wait=2  # Minimum 2 frames between onsets (~32ms at 256 hop)
+                delta=0.15,  # Less sensitive (stricter)
+                wait=4  # Minimum 4 frames between onsets (~64ms at 256 hop)
             )
             
             # Convert frames to samples
@@ -243,32 +244,28 @@ class StutterDetector:
                 mfcc1_norm = (mfcc1 - np.mean(mfcc1)) / (np.std(mfcc1) + 1e-8)
                 mfcc2_norm = (mfcc2 - np.mean(mfcc2)) / (np.std(mfcc2) + 1e-8)
                 
-                # Calculate similarity (correlation)
+                # Calculate similarity (correlation only - cosine similarity causes false positives)
                 similarity = np.corrcoef(mfcc1_norm, mfcc2_norm)[0, 1]
                 
-                # Also calculate cosine similarity as backup
-                cosine_sim = np.dot(mfcc1_norm, mfcc2_norm) / (
-                    np.linalg.norm(mfcc1_norm) * np.linalg.norm(mfcc2_norm) + 1e-8
-                )
+                # Skip if similarity is NaN
+                if np.isnan(similarity):
+                    continue
                 
-                # Use the higher of the two similarities
-                max_similarity = max(similarity, cosine_sim) if not np.isnan(similarity) else cosine_sim
-                
-                # Threshold for segment similarity (more lenient than frame comparison)
-                if max_similarity > self.repetition_threshold:
+                # Threshold for segment similarity (extremely strict)
+                if similarity > self.repetition_threshold:
                     if repetition_count == 0:
                         repetition_start_time = segment_times[i]
                     repetition_count += 1
                 else:
                     # End of repetition sequence
-                    if repetition_count >= 1:  # Even 2 similar segments is a repetition
+                    if repetition_count >= 4:  # Need at least 5 similar segments (extremely strict)
                         event = {
                             'type': 'repetition',
                             'timestamp': timestamp - (len(audio) / self.sr) + (repetition_start_time or 0),
                             'count': repetition_count + 1,  # +1 because count is comparisons, not segments
-                            'confidence': float(max_similarity),
+                            'confidence': float(similarity),
                             'method': 'onset_based',
-                            'severity': 'severe' if repetition_count >= 3 else 'moderate'
+                            'severity': 'severe' if repetition_count >= 6 else 'moderate'
                         }
                         
                         if not self._is_duplicate_event(event):
@@ -278,14 +275,14 @@ class StutterDetector:
                     repetition_start_time = None
             
             # Check for repetition at end of buffer
-            if repetition_count >= 1:
+            if repetition_count >= 4:
                 event = {
                     'type': 'repetition',
                     'timestamp': timestamp - (len(audio) / self.sr) + (repetition_start_time or 0),
                     'count': repetition_count + 1,
-                    'confidence': 0.85,
+                    'confidence': 0.96,
                     'method': 'onset_based',
-                    'severity': 'severe' if repetition_count >= 3 else 'moderate'
+                    'severity': 'severe' if repetition_count >= 6 else 'moderate'
                 }
                 
                 if not self._is_duplicate_event(event):
@@ -354,15 +351,15 @@ class StutterDetector:
                             repetition_start_frame = frame_idx1
                         repetition_count += 1
                     else:
-                        if repetition_count >= 3:  # Need at least 3 matching pairs
+                        if repetition_count >= 8:  # Need at least 8 matching pairs (very strict)
                             event = {
                                 'type': 'repetition',
                                 'timestamp': timestamp - (len(audio) / self.sr) + (repetition_start_frame * hop_length / self.sr),
                                 'count': repetition_count,
-                                'confidence': float(similarity) if not np.isnan(similarity) else 0.8,
+                                'confidence': float(similarity) if not np.isnan(similarity) else 0.95,
                                 'method': 'self_similarity',
                                 'stride_ms': round(stride * hop_length / self.sr * 1000, 1),
-                                'severity': 'severe' if repetition_count >= 5 else 'moderate'
+                                'severity': 'severe' if repetition_count >= 12 else 'moderate'
                             }
                             
                             if not self._is_duplicate_event(event):
@@ -401,7 +398,7 @@ class StutterDetector:
                 # Low ZCR indicates sustained sound (vowels, fricatives)
                 # Sufficient energy indicates active speech
                 # ZCR threshold set to 0.12 (balanced)
-                is_sustained = (zcr[i] < 0.12 and rms[i] > self.energy_threshold * 1.2)
+                is_sustained = (zcr[i] < 0.06 and rms[i] > self.energy_threshold * 1.5)
                 
                 if is_sustained:
                     sustained_frames += 1
@@ -495,7 +492,7 @@ class StutterDetector:
                         # Inter-lexical: ≥250ms might be normal hesitation
                         # Only flag if it's unusually long (>300ms), but not too long (sentence boundary)
                         # Relaxed from 500ms to 300ms
-                        if gap_duration >= 0.30:
+                        if gap_duration >= 0.45:
                             event = {
                                 'type': 'block',
                                 'timestamp': timestamp - ((len(audio) - speech1_end) / self.sr),

@@ -476,6 +476,10 @@ class HabitLinkSession:
         NOTE: Interim results provide real-time feedback only.
         Final results are saved to summary lists to prevent duplicates in reports.
         Speech rate is analyzed separately using 10-second audio windows in audio_callback.
+        
+        IMPORTANT: Dialect vocabulary detection is DISABLED for interim results
+        to prevent false positives and duplicate detections. Only Final results
+        are analyzed for dialect vocabulary.
         """
         segment = self._prepare_segment(transcript_item)
         text = transcript_item["text"]
@@ -485,18 +489,9 @@ class HabitLinkSession:
             self.speech_rate_text_buffer.append(text)
         
         # Add text to dialect buffer (for 10-second window analysis)
+        # NOTE: Vocabulary detection is now ONLY done on Final results (see _analyze_full)
         if self.enabled_analyses["dialect"]:
             self.dialect_text_buffer.append(text)
-            
-            # Instant vocabulary detection (doesn't wait for 10s window)
-            if self.dialect_analyzer:
-                detected_words = self.dialect_analyzer.detect_dialect_vocabulary(text, transcript_item.get("timestamp"))
-                if detected_words:
-                    for word_info in detected_words:
-                        msg = f"방언 용어 감지: '{word_info['word']}' ({word_info['region']}도)"
-                        print(f"🔔 {msg}")
-                        self.feedback_queue.put(msg)
-                        self.ui_feedback_queue.put({"message": msg, "type": "dialect_vocabulary"})
         
         loop = asyncio.get_running_loop()
         
@@ -687,6 +682,18 @@ class HabitLinkSession:
                     print(f"⚠️ Error in {task_name} analysis: {e}")
                     import traceback
                     traceback.print_exc()
+        
+        # Dialect vocabulary detection (FINAL results only, to prevent duplicates)
+        if self.enabled_analyses["dialect"] and self.dialect_analyzer:
+            text = transcript_item["text"]
+            timestamp = transcript_item.get("timestamp")
+            detected_words = self.dialect_analyzer.detect_dialect_vocabulary(text, timestamp, is_final=True)
+            if detected_words:
+                for word_info in detected_words:
+                    msg = f"방언 용어 감지: '{word_info['word']}' ({word_info['region']}도)"
+                    print(f"🔔 {msg}")
+                    self.feedback_queue.put(msg)
+                    self.ui_feedback_queue.put({"message": msg, "type": "dialect_vocabulary"})
         
         # Slow analyses (grammar, context) - run periodically
         current_time = time.time()
@@ -1028,6 +1035,10 @@ class HabitLinkSession:
     
     def generate_summary_report(self):
         """Generate and print a comprehensive summary report after the session ends."""
+        import os
+        import tempfile
+        import soundfile as sf
+        
         print("\n\n" + "="*60)
         print("📋 세션 요약 리포트")
         print("="*60)
