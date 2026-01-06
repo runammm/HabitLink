@@ -392,7 +392,7 @@ class DialectAnalyzer:
             result['feedback_trigger'] = True
         elif result['acoustic_analysis']:
             acoustic = result['acoustic_analysis']
-            if acoustic['non_standard_prob'] >= 0.85:  # 85% threshold for high confidence
+            if acoustic['non_standard_prob'] >= 0.95:  # 95% threshold for high confidence
                 result['combined_verdict'] = 'non_standard'
                 result['confidence'] = acoustic['non_standard_prob']
                 result['feedback_trigger'] = True
