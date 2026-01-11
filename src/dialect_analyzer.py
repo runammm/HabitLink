@@ -58,29 +58,29 @@ class DialectAnalyzer:
         # Try to load the model
         try:
             if not os.path.exists(model_path):
-                print(f"⚠️ 방언 분석 모델을 찾을 수 없습니다: {model_path}")
-                print(f"   노트북 'notebooks/dialect_model_training.ipynb'를 실행하여 모델을 먼저 학습시켜주세요.")
+                print(f"⚠️ Dialect analysis model not found: {model_path}")
+                print(f"    Run the notebook 'notebooks/dialect_model_training.ipynb' to train the model first.")
                 return
             
             # Import transformers here to avoid dependency issues if not installed
             from transformers import pipeline
             
             # The 'audio-classification' pipeline handles all preprocessing automatically
-            print(f"방언 분석 모델을 로드하는 중: {model_path}")
+            print(f"Loading dialect analysis model: {model_path}")
             self.classifier = pipeline(
                 "audio-classification",
                 model=model_path,
                 device=-1  # Use CPU by default (can be changed to 0 for GPU)
             )
             self.model_loaded = True
-            print("✅ 방언 분석 모델 로드 완료!")
+            print("✅ Dialect analysis model loaded!")
             
         except ImportError as e:
-            print(f"⚠️ Transformers 라이브러리가 설치되지 않았습니다.")
-            print(f"   다음 명령어로 설치하세요: pip install transformers torch")
-            print(f"   에러: {e}")
+            print(f"⚠️ Transformers library is not installed.")
+            print(f"    Install with: pip install transformers torch")
+            print(f"    Error: {e}")
         except Exception as e:
-            print(f"⚠️ 방언 분석 모델 로드 중 오류 발생: {e}")
+            print(f"⚠️ Error in dialect analysis model loading: {e}")
             traceback.print_exc()
     
     def _load_dialect_vocabulary(self, vocabulary_path: str):
@@ -92,8 +92,8 @@ class DialectAnalyzer:
         """
         try:
             if not os.path.exists(vocabulary_path):
-                print(f"⚠️ 방언 어휘 사전을 찾을 수 없습니다: {vocabulary_path}")
-                print(f"   어휘 기반 방언 검출이 비활성화됩니다.")
+                print(f"⚠️ Dialect word list not found: {vocabulary_path}")
+                print(f"    Vocabulary-based dialect detection is disabled.")
                 return
             
             with open(vocabulary_path, 'r', encoding='utf-8') as f:
@@ -117,10 +117,10 @@ class DialectAnalyzer:
                         pattern = re.compile(r'\b' + re.escape(word) + r'\b')
                         self.dialect_patterns.append((word, pattern))
             
-            print(f"✅ 방언 어휘 사전 로드 완료 ({len(self.dialect_vocab)}개 단어)")
+            print(f"✅ Dialect word list loaded ({len(self.dialect_vocab)} words)")
         
         except Exception as e:
-            print(f"⚠️ 방언 어휘 사전 로드 중 오류: {e}")
+            print(f"⚠️ Error in dialect word list loading: {e}")
             traceback.print_exc()
     
     def analyze(self, audio_path: str, top_k: int = 2) -> Dict[str, float]:
@@ -150,10 +150,10 @@ class DialectAnalyzer:
             predictions = self.classifier(audio_path, top_k=2)  # Binary classification
             
             if not predictions:
-                print(f"  ⚠️ 모델이 예측을 반환하지 않았습니다")
+                print(f"  ⚠️ Model did not return predictions")
                 return {"error": "Model returned empty predictions"}
             
-            print(f"  ✅ 모델 예측 완료: {len(predictions)}개 결과")
+            print(f"  ✅ Model predictions completed: {len(predictions)} results")
             for p in predictions:
                 print(f"     • {p['label']}: {p['score']*100:.2f}%")
             
@@ -175,7 +175,7 @@ class DialectAnalyzer:
             return probabilities
             
         except Exception as e:
-            print(f"  ⚠️ 방언 분석 중 오류 발생: {e}")
+            print(f"  ⚠️ Error in dialect analysis: {e}")
             traceback.print_exc()
             return {"error": str(e)}
     
@@ -215,7 +215,7 @@ class DialectAnalyzer:
             return result
             
         except Exception as e:
-            print(f"⚠️ 방언 분석 중 오류 발생: {e}")
+            print(f"⚠️ Error in dialect analysis: {e}")
             traceback.print_exc()
             return {"error": str(e)}
     

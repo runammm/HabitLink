@@ -298,16 +298,8 @@ class HabitLinkSession:
                             total_word_duration = sum(word_durations)
                             actual_speech_duration = total_word_duration
                             
-                            print(f"실제 발화 시간: {actual_speech_duration:.2f}초 (STT word timestamps 기반)")
-                            print(f"   단어 수: {len(word_durations)}개, 평균 단어 길이: {actual_speech_duration/len(word_durations):.3f}초")
-                            
-                            # Show timing span for reference
-                            first_word_start = all_words[0]['start']
-                            last_word_end = all_words[-1]['end']
-                            total_span = last_word_end - first_word_start
-                            silence_between_words = total_span - actual_speech_duration
-                            print(f"   첫 단어 시작: {first_word_start:.2f}s, 마지막 단어 끝: {last_word_end:.2f}s")
-                            print(f"   전체 구간: {total_span:.2f}s, 단어 간 침묵: {silence_between_words:.2f}s")
+                            print(f"실제 발화 시간: {actual_speech_duration:.2f}초")
+                            print(f"   단어 수: {len(word_durations)}개")
                         else:
                             # All word durations were invalid, fallback to VAD
                             print("   [경고] 모든 단어 duration이 비정상적임, VAD로 fallback")
