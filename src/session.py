@@ -7,7 +7,6 @@ from collections import defaultdict, deque
 from datetime import datetime
 from typing import Dict, Optional
 import concurrent.futures
-import traceback
 import numpy as np
 
 from .audio_engine import AudioEngine
@@ -67,10 +66,8 @@ class HabitLinkSession:
         self.audio_buffer = deque(maxlen=16000 * 30)  # 30 seconds of audio at 16kHz
         self.last_analysis_time = time.time()
         
-        # Speech rate monitoring (10-second windows)
-        self.speech_rate_audio_buffer = deque(maxlen=16000 * 10)  # 10 seconds at 16kHz
-        self.speech_rate_text_buffer = []  # Transcripts in current 10s window
-        self.last_speech_rate_check = time.time()
+        # Speech rate monitoring (per-sentence analysis)
+        self.speech_rate_audio_buffer = deque(maxlen=16000 * 10)  # Keep for potential future use
         
         # Dialect detection monitoring (10-second windows)
         self.dialect_audio_buffer = deque(maxlen=16000 * 10)  # 10 seconds at 16kHz
@@ -145,7 +142,6 @@ class HabitLinkSession:
             
         except Exception as e:
             print(f"❌ Error during early initialization: {e}")
-            traceback.print_exc()
             self.is_initialized = False
             return False
         
@@ -258,18 +254,91 @@ class HabitLinkSession:
                     sample_rate_hertz=16000,
                     language_code="ko-KR",
                     enable_automatic_punctuation=True,
+                    enable_word_time_offsets=True,  # Get word-level timing info
                 )
                 
                 print("Waiting for Google Cloud STT to complete...")
                 response = client.recognize(config=config, audio=audio)
                 print("Received response from Google Cloud STT.")
                 
-                # Convert response to segments format using actual speech duration
-                from .audio_utils import detect_speech_duration
+                # Calculate actual speech duration from STT word timestamps (most accurate)
+                # Sum up individual word durations to exclude silence between words
+                actual_speech_duration = calibration_duration  # Default fallback
                 
-                # Detect actual speech duration (excluding silence)
-                actual_speech_duration = detect_speech_duration(calibration_path, sample_rate=16000)
-                print(f"실제 발화 시간: {actual_speech_duration:.2f}초 (녹음 시간: {calibration_duration:.1f}초)")
+                if response.results:
+                    # Collect all words with timestamps from STT results
+                    all_words = []
+                    
+                    for result in response.results:
+                        if result.alternatives and hasattr(result.alternatives[0], 'words'):
+                            words = result.alternatives[0].words
+                            for word in words:
+                                if (hasattr(word.start_time, 'total_seconds') and 
+                                    hasattr(word.end_time, 'total_seconds')):
+                                    all_words.append({
+                                        'word': word.word,
+                                        'start': word.start_time.total_seconds(),
+                                        'end': word.end_time.total_seconds()
+                                    })
+                    
+                    # If we got word timestamps, sum up individual word durations
+                    # This excludes silence between words!
+                    if all_words:
+                        # Calculate individual word durations and filter out anomalies
+                        word_durations = []
+                        for w in all_words:
+                            duration = w['end'] - w['start']
+                            # Sanity check: word duration should be between 0.01s and 5s
+                            if 0.01 <= duration <= 5.0:
+                                word_durations.append(duration)
+                            else:
+                                print(f"   [경고] 비정상 단어 duration 제외: '{w['word']}' ({duration:.3f}s)")
+                        
+                        if word_durations:
+                            total_word_duration = sum(word_durations)
+                            actual_speech_duration = total_word_duration
+                            
+                            print(f"실제 발화 시간: {actual_speech_duration:.2f}초 (STT word timestamps 기반)")
+                            print(f"   단어 수: {len(word_durations)}개, 평균 단어 길이: {actual_speech_duration/len(word_durations):.3f}초")
+                            
+                            # Show timing span for reference
+                            first_word_start = all_words[0]['start']
+                            last_word_end = all_words[-1]['end']
+                            total_span = last_word_end - first_word_start
+                            silence_between_words = total_span - actual_speech_duration
+                            print(f"   첫 단어 시작: {first_word_start:.2f}s, 마지막 단어 끝: {last_word_end:.2f}s")
+                            print(f"   전체 구간: {total_span:.2f}s, 단어 간 침묵: {silence_between_words:.2f}s")
+                        else:
+                            # All word durations were invalid, fallback to VAD
+                            print("   [경고] 모든 단어 duration이 비정상적임, VAD로 fallback")
+                            from .audio_utils import detect_speech_duration
+                            actual_speech_duration = detect_speech_duration(
+                                calibration_path, 
+                                sample_rate=16000,
+                                top_db=60
+                            )
+                            print(f"실제 발화 시간: {actual_speech_duration:.2f}초 (VAD 기반, 부정확할 수 있음)")
+                    else:
+                        # Fallback to VAD-based detection
+                        from .audio_utils import detect_speech_duration
+                        actual_speech_duration = detect_speech_duration(
+                            calibration_path, 
+                            sample_rate=16000,
+                            top_db=60
+                        )
+                        print(f"실제 발화 시간: {actual_speech_duration:.2f}초 (VAD 기반, 부정확할 수 있음)")
+                
+                # Final sanity check: speech duration should be reasonable
+                if actual_speech_duration > calibration_duration:
+                    print(f"   [경고] 발화 시간({actual_speech_duration:.2f}s)이 녹음 시간({calibration_duration:.1f}s)보다 김!")
+                    print(f"   녹음 시간으로 보정합니다.")
+                    actual_speech_duration = calibration_duration
+                elif actual_speech_duration < 1.0:
+                    print(f"   [경고] 발화 시간이 너무 짧음 ({actual_speech_duration:.2f}s)")
+                    print(f"   최소값 1.0초로 보정합니다.")
+                    actual_speech_duration = 1.0
+                
+                print(f"   (전체 녹음 시간: {calibration_duration:.1f}초)")
                 
                 calibration_transcript = []
                 if response.results:
@@ -471,27 +540,9 @@ class HabitLinkSession:
         }
     
     async def _analyze_fast_only(self, transcript_item: Dict):
-        """Fast analysis only: keywords, profanity (for interim results).
-        
-        NOTE: Interim results provide real-time feedback only.
-        Final results are saved to summary lists to prevent duplicates in reports.
-        Speech rate is analyzed separately using 10-second audio windows in audio_callback.
-        
-        IMPORTANT: Dialect vocabulary detection is DISABLED for interim results
-        to prevent false positives and duplicate detections. Only Final results
-        are analyzed for dialect vocabulary.
-        """
+        """Fast analysis for interim results: keywords and profanity only."""
         segment = self._prepare_segment(transcript_item)
         text = transcript_item["text"]
-        
-        # Add text to speech rate buffer (for 10-second window analysis)
-        if self.enabled_analyses["speech_rate"]:
-            self.speech_rate_text_buffer.append(text)
-        
-        # Add text to dialect buffer (for 10-second window analysis)
-        # NOTE: Vocabulary detection is now ONLY done on Final results (see _analyze_full)
-        if self.enabled_analyses["dialect"]:
-            self.dialect_text_buffer.append(text)
         
         loop = asyncio.get_running_loop()
         
@@ -541,11 +592,10 @@ class HabitLinkSession:
                                 # Real-time feedback
                                 for i in range(new_occurrences):
                                     msg = f"키워드 검출: '{keyword}'"
-                                    print(f"🔔 {msg}")
                                     self.feedback_queue.put(msg)
                                     self.ui_feedback_queue.put({"message": msg, "type": "keyword"})
                                 
-                                # Store for report (with deduplication)
+                                # Store for report
                                 report_key = ("keyword", keyword_lower, round(item["timestamp"], 1))
                                 if report_key not in self.detected_items_for_report:
                                     self.detected_items_for_report.add(report_key)
@@ -577,11 +627,10 @@ class HabitLinkSession:
                                 # Real-time feedback
                                 for i in range(new_occurrences):
                                     msg = f"비속어 검출: '{profanity}'"
-                                    print(f"🔔 {msg}")
                                     self.feedback_queue.put(msg)
                                     self.ui_feedback_queue.put({"message": msg, "type": "profanity"})
                                 
-                                # Store for report (with deduplication)
+                                # Store for report
                                 report_key = ("profanity", profanity_lower, round(item["timestamp"], 1))
                                 if report_key not in self.detected_items_for_report:
                                     self.detected_items_for_report.add(report_key)
@@ -591,13 +640,20 @@ class HabitLinkSession:
                 
                 except Exception as e:
                     print(f"⚠️ Error in {task_name} analysis: {e}")
-                    import traceback
-                    traceback.print_exc()
     
     async def _analyze_single_transcript(self, transcript_item: Dict):
         """Analyze a single transcript immediately (full analysis for final results)."""
         segment = self._prepare_segment(transcript_item)
+        text = transcript_item["text"]
         word_count = len(segment["text"].split())
+        
+        # Analyze speech rate for this Final result (per-sentence analysis)
+        if self.enabled_analyses["speech_rate"]:
+            self._analyze_speech_rate_for_sentence(transcript_item)
+        
+        # Add FINAL text to dialect buffer (for 10-second window analysis)
+        if self.enabled_analyses["dialect"]:
+            self.dialect_text_buffer.append(text)
         
         loop = asyncio.get_running_loop()
         
@@ -680,31 +736,27 @@ class HabitLinkSession:
                 
                 except Exception as e:
                     print(f"⚠️ Error in {task_name} analysis: {e}")
-                    import traceback
-                    traceback.print_exc()
         
-        # Dialect vocabulary detection (FINAL results only, to prevent duplicates)
+        # Dialect vocabulary detection
         if self.enabled_analyses["dialect"] and self.dialect_analyzer:
-            text = transcript_item["text"]
-            timestamp = transcript_item.get("timestamp")
-            detected_words = self.dialect_analyzer.detect_dialect_vocabulary(text, timestamp, is_final=True)
+            detected_words = self.dialect_analyzer.detect_dialect_vocabulary(
+                transcript_item["text"], 
+                transcript_item.get("timestamp"), 
+                is_final=True
+            )
             if detected_words:
                 for word_info in detected_words:
                     msg = f"방언 용어 감지: '{word_info['word']}' ({word_info['region']}도)"
-                    print(f"🔔 {msg}")
                     self.feedback_queue.put(msg)
                     self.ui_feedback_queue.put({"message": msg, "type": "dialect_vocabulary"})
         
         # Slow analyses (grammar, context) - run periodically
         current_time = time.time()
         if current_time - self.last_analysis_time > 5.0:
-            # Run synchronously to ensure completion before session ends
             try:
                 await self._run_slow_analysis()
             except Exception as e:
                 print(f"⚠️ Slow analysis error: {e}")
-                import traceback
-                traceback.print_exc()
             self.last_analysis_time = current_time
     
     async def _run_slow_analysis(self):
@@ -759,10 +811,6 @@ class HabitLinkSession:
                                 error["timestamp"] = time.time()
                     
                     self.all_grammar_errors.extend(grammar_errors)
-                    # Note: Grammar analysis is excluded from real-time feedback due to API latency
-                    # Results are saved and will be included in the post-session report only
-                    if grammar_errors:
-                        print(f"📊 문법 분석 완료 ({len(grammar_errors)}개 항목) - 리포트에 기록됨")
                 
                 if self.enabled_analyses["context"]:
                     context_errors = llm_results.get("context_errors", [])
@@ -777,10 +825,6 @@ class HabitLinkSession:
                                 error["timestamp"] = time.time()
                     
                     self.all_context_errors.extend(context_errors)
-                    # Note: Context analysis is excluded from real-time feedback due to API latency
-                    # Results are saved and will be included in the post-session report only
-                    if context_errors:
-                        print(f"📊 맥락 분석 완료 ({len(context_errors)}개 항목) - 리포트에 기록됨")
             
             except Exception as e:
                 print(f"⚠️ Error in LLM analysis: {e}")
@@ -808,11 +852,8 @@ class HabitLinkSession:
             if self.enabled_analyses["speech_rate"]:
                 self.speech_rate_audio_buffer.extend(audio_array)
                 
-                # Check if 10 seconds have passed since last speech rate check
-                current_time = time.time()
-                if current_time - self.last_speech_rate_check >= 10.0:
-                    self._check_speech_rate_10s_window()
-                    self.last_speech_rate_check = current_time
+                # Speech rate is now analyzed per-sentence in _analyze_speech_rate_for_sentence
+                # No need for periodic checks anymore
             
             # Add to dialect buffer (for 10-second window analysis)
             if self.enabled_analyses["dialect"]:
@@ -853,66 +894,58 @@ class HabitLinkSession:
         except Exception as e:
             pass  # Silently ignore errors in callback
     
-    def _check_speech_rate_10s_window(self):
+    def _analyze_speech_rate_for_sentence(self, transcript_item: Dict):
         """
-        Check speech rate for the past 10-second window.
-        Uses actual speech duration (excluding silence) from audio buffer.
+        Analyze speech rate for a single sentence (Final result).
+        This provides per-sentence feedback which is more natural and accurate.
+        
+        Args:
+            transcript_item: Dict with 'text', 'timestamp', 'word_timestamps'
         """
         try:
-            # Check if we have enough data
-            if len(self.speech_rate_audio_buffer) < 16000 * 2:  # At least 2 seconds
+            word_timestamps = transcript_item.get("word_timestamps", [])
+            
+            if not word_timestamps:
                 return
             
-            # Get text from buffer first
-            if not self.speech_rate_text_buffer:
-                return  # No text to analyze
+            # Calculate actual speech duration by summing individual word durations
+            word_durations = []
+            for word_info in word_timestamps:
+                if 'start' in word_info and 'end' in word_info:
+                    duration = word_info['end'] - word_info['start']
+                    # Sanity check: word duration should be between 0.01s and 5s
+                    if 0.01 <= duration <= 5.0:
+                        word_durations.append(duration)
             
-            # Combine all text in buffer
-            combined_text = " ".join(self.speech_rate_text_buffer)
-            word_count = len(combined_text.split())
-            
-            # Need at least 3 words for meaningful analysis
-            if word_count < 3:
-                self.speech_rate_text_buffer.clear()
+            # Need at least 5 words for meaningful sentence-level analysis
+            if len(word_durations) < 5:
                 return
             
-            # Convert audio buffer to numpy array
-            audio_data = np.array(self.speech_rate_audio_buffer, dtype=np.float32) / 32768.0
+            # Total speech duration = sum of all word durations (excluding pauses)
+            speech_duration = sum(word_durations)
+            word_count = len(word_durations)
             
-            # Detect actual speech duration using VAD
-            from .audio_utils import detect_speech_segments
-            speech_duration, _ = detect_speech_segments(audio_data, sample_rate=16000)
-            
-            # Calculate WPM (only if speech duration is reasonable)
-            # We need at least 2 seconds of actual speech for reliable measurement
-            if speech_duration >= 2.0 and word_count > 0:
+            # Calculate WPM
+            if speech_duration >= 0.5 and word_count > 0:
                 wpm = (word_count / speech_duration) * 60.0
                 
                 # Sanity check: WPM should be between 30 and 300
-                if 30 <= wpm <= 300:
-                    # Check against target WPM
-                    if self.target_wpm is not None:
-                        tolerance = self.target_wpm * 0.2
-                        
-                        if wpm > self.target_wpm + tolerance:
-                            msg = f"발화 속도가 빠릅니다: {wpm:.0f} WPM"
-                            print(f"🔔 {msg}")
-                            self.feedback_queue.put(msg)
-                            self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
-                        elif wpm < self.target_wpm - tolerance:
-                            msg = f"발화 속도가 느립니다: {wpm:.0f} WPM"
-                            print(f"🔔 {msg}")
-                            self.feedback_queue.put(msg)
-                            self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
-            
-            # Clear text buffer for next window
-            # (audio buffer is a deque with maxlen, so it auto-manages)
-            self.speech_rate_text_buffer.clear()
+                if 30 <= wpm <= 300 and self.target_wpm is not None:
+                    tolerance = self.target_wpm * 0.2
+                    
+                    if wpm > self.target_wpm + tolerance:
+                        msg = f"발화 속도가 빠릅니다: {wpm:.0f} WPM (목표: {self.target_wpm:.0f})"
+                        print(f"🔔 {msg}")
+                        self.feedback_queue.put(msg)
+                        self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
+                    elif wpm < self.target_wpm - tolerance:
+                        msg = f"발화 속도가 느립니다: {wpm:.0f} WPM (목표: {self.target_wpm:.0f})"
+                        print(f"🔔 {msg}")
+                        self.feedback_queue.put(msg)
+                        self.ui_feedback_queue.put({"message": msg, "type": "speech_rate"})
             
         except Exception as e:
-            print(f"⚠️ Error in speech rate window check: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"⚠️ Error in speech rate analysis: {e}")
     
     def _check_dialect_10s_window(self):
         """
@@ -965,8 +998,6 @@ class HabitLinkSession:
             
         except Exception as e:
             print(f"⚠️ Error in dialect window check: {e}")
-            import traceback
-            traceback.print_exc()
     
     def streaming_producer(self):
         """
@@ -991,7 +1022,6 @@ class HabitLinkSession:
             
         except Exception as e:
             print(f"❌ Error in streaming producer: {e}")
-            traceback.print_exc()
         finally:
             print("🎤 Streaming producer stopped")
     
@@ -1030,7 +1060,6 @@ class HabitLinkSession:
         
         except Exception as e:
             print(f"❌ Error in UI: {e}")
-            traceback.print_exc()
             self.stop_event.set()
     
     def generate_summary_report(self):
@@ -1263,8 +1292,6 @@ class HabitLinkSession:
                         
                 except Exception as e:
                     print(f"❌ 말더듬 분석 중 오류 발생: {e}")
-                    import traceback
-                    traceback.print_exc()
             else:
                 print("분석할 오디오 데이터가 없습니다.")
         
@@ -1466,8 +1493,6 @@ class HabitLinkSession:
                     
                     except Exception as e:
                         print(f"❌ 방언 분석 중 오류 발생: {e}")
-                        import traceback
-                        traceback.print_exc()
                 else:
                     print("\n분석할 오디오 데이터가 없습니다.")
             else:
@@ -1502,7 +1527,6 @@ class HabitLinkSession:
             print(f"✅ PDF 리포트 생성 완료: {pdf_path}")
         except Exception as e:
             print(f"❌ PDF 리포트 생성 실패: {e}")
-            traceback.print_exc()
     
     def _wait_for_start_trigger(self):
         """
